@@ -64,45 +64,48 @@ export function TelegramScreen() {
   };
 
   return (
-    <div className="min-h-full pb-24">
-      <header className="sticky top-0 z-30 flex items-center justify-between gap-2 border-b border-border/60 bg-background/95 px-4 py-3 backdrop-blur safe-top">
-        <div className="min-w-0">
-          <h1 className="text-lg font-bold leading-tight">معرض تليكرام</h1>
-          <p className="truncate text-[11px] text-muted-foreground">
-            {assets.length} عنصر · {lastPolledAt ? "آخر تحديث الآن" : "بانتظار الرسائل"}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={resync}
-            disabled={!ready || busy}
-            className="flex items-center gap-1.5 rounded-full bg-secondary px-3 py-2 text-xs font-semibold disabled:opacity-50"
-            title="إعادة الجلب من البداية"
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            إعادة الفهرسة
-          </button>
-          <button
-            onClick={refresh}
-            disabled={!ready || busy}
-            className="flex items-center gap-2 rounded-full bg-secondary px-4 py-2 text-sm font-semibold disabled:opacity-50"
-          >
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            تحديث
-          </button>
+    <div className="min-h-full pb-32">
+      <header className="hero-glow safe-top px-5 pb-5 pt-4">
+        <p className="text-[11px] font-black uppercase tracking-[0.25em] text-primary">CHANNEL FEED</p>
+        <div className="mt-2 flex items-end justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="headline text-[44px] tabular-nums">{assets.length}</h1>
+            <p className="text-sm font-semibold text-muted-foreground">
+              {lastPolledAt ? "من قناة تليكرام · محدَّث" : "بانتظار الرسائل"}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={resync}
+              disabled={!ready || busy}
+              className="grid h-11 w-11 place-items-center rounded-full bg-secondary disabled:opacity-40"
+              title="إعادة الفهرسة"
+            >
+              <RotateCcw className="h-4 w-4" />
+            </button>
+            <button
+              onClick={refresh}
+              disabled={!ready || busy}
+              className="flex items-center gap-2 rounded-full bg-hot px-5 py-3 text-sm font-black text-primary-foreground shadow-[var(--shadow-fab)] transition active:scale-95 disabled:opacity-40 disabled:shadow-none"
+            >
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              تحديث
+            </button>
+          </div>
         </div>
       </header>
 
       {!ready && (
-        <div className="mx-4 mt-4 rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm text-yellow-100">
-          أضف بوت تليكرام من الإعدادات لعرض الصور من مجموعتك.
+        <div className="mx-4 mb-3 rounded-2xl border border-primary/40 bg-primary/10 p-4 text-sm font-semibold">
+          أضف بوت تليكرام من «ضبط» لعرض صور القناة.
         </div>
       )}
       {lastError && (
-        <div className="mx-4 mt-4 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive-foreground">
+        <div className="mx-4 mb-3 rounded-2xl border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive-foreground">
           خطأ من تليكرام: {lastError}
         </div>
       )}
+
       {ready && assets.length === 0 && (
         <div className="mx-4 mt-4 rounded-xl border border-border bg-card p-4 text-xs leading-relaxed text-muted-foreground">
           <p className="mb-2 font-semibold text-foreground">لماذا لا أرى صوري القديمة؟</p>
