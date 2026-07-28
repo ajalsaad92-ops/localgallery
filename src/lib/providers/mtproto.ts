@@ -302,21 +302,41 @@ export async function fetchChannelMedia(
   const c = client as any;
   logTg("feed", `reading history of "${target.title}"`, { id: target.id, limit });
   const entity = await resolveEntity(c, target);
-  const messages = await c.getMessages(entity, { limit });
+  // Page manually: a single getMessages call caps out and silently returns few
+  // rows on big channels.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const messages: any[] = [];
+  let offsetId = 0;
+  while (messages.length < limit) {
+    const page = await c.getMessages(entity, { limit: Math.min(100, limit - messages.length), offsetId });
+    if (!page || page.length === 0) break;
+    messages.push(...page);
+    offsetId = Number(page[page.length - 1].id);
+    if (page.length < 2) break;
+  }
   logTg("feed", `got ${messages.length} messages`);
+  if (messages.length === 0) {
+    logTg("feed", "channel returned no messages — check the selected channel", { id: target.id }, "warn");
+  }
   let count = 0;
   let skippedNoMedia = 0;
   let skippedMime = 0;
   let thumbFails = 0;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const m of messages as any[]) {
-    const doc = m.document;
-    const photo = m.photo;
+    // gramjs exposes .document/.photo getters, but forwarded/album items are
+    // sometimes only reachable through .media.
+    const doc = m.document ?? m.media?.document ?? null;
+    const photo = m.photo ?? m.media?.photo ?? null;
     if (!doc && !photo) { skippedNoMedia++; continue; }
     const mime: string = doc?.mimeType ?? "image/jpeg";
     const isVideo = mime.startsWith("video/");
     const isImage = mime.startsWith("image/") || (!doc && !!photo);
-    if (!isVideo && !isImage) { skippedMime++; continue; }
+    // Documents sent as generic files (application/octet-stream) still count
+    // when the filename looks like media.
+    const nameGuess: string = (doc?.attributes ?? []).find((a: { fileName?: string }) => a.fileName)?.fileName ?? "";
+    const looksMedia = /\.(jpe?g|png|webp|gif|heic|heif|mp4|mov|mkv|webm|avi)$/i.test(nameGuess);
+    if (!isVideo && !isImage && !looksMedia) { skippedMime++; continue; }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const attrs: any[] = doc?.attributes ?? [];
