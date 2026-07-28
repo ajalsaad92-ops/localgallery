@@ -182,9 +182,13 @@ export function useTelegramFeed(enabled: boolean, intervalMs = 15000, trigger: n
  */
 export async function importChannelHistory(limit = 300): Promise<number> {
   const { fetchChannelMedia } = await import("@/lib/providers/mtproto");
-  return fetchChannelMedia(limit, async (item) => {
+  let added = 0;
+  let updated = 0;
+  let withThumb = 0;
+  const n = await fetchChannelMedia(limit, async (item) => {
     const id = `tgm-${item.chatId}-${item.messageId}`;
     const existing = await photoDb.assets.get(id);
+    if (item.thumbDataUrl) withThumb++;
     const base: Partial<MediaAsset> = {
       provider: "telegram-remote",
       remoteMessageId: item.messageId,
@@ -199,10 +203,13 @@ export async function importChannelHistory(limit = 300): Promise<number> {
       date: item.date || Date.now(),
       posterDataUrl: item.thumbDataUrl,
     };
-    if (existing) await photoDb.assets.update(id, base);
-    else await photoDb.assets.put({ id, createdAt: Date.now(), ...base } as MediaAsset);
+    if (existing) { await photoDb.assets.update(id, base); updated++; }
+    else { await photoDb.assets.put({ id, createdAt: Date.now(), ...base } as MediaAsset); added++; }
   });
+  logTg("import", "channel history stored", { scanned: n, added, updated, withThumb });
+  return n;
 }
+
 
 /** Resolve a full-size URL for a remote asset (getFile → file/bot). */
 export async function resolveRemoteUrl(asset: MediaAsset): Promise<string | null> {
