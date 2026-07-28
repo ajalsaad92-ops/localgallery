@@ -189,9 +189,11 @@ export async function runSyncCycle(): Promise<{ processed: number; failed: numbe
         unsynced.length,
       );
       try {
-        await uploadOne(asset, cfg.botToken, cfg.chatId, now.freeBlobAfterSync);
+        if (accountReady) await uploadOneViaAccount(asset, now.freeBlobAfterSync);
+        else await uploadOne(asset, cfg!.botToken!, cfg!.chatId!, now.freeBlobAfterSync);
         done++;
         emit({ done });
+
       } catch (e) {
         failed++;
         emit({ failed, lastError: e instanceof Error ? e.message : String(e) });
