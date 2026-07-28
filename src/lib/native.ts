@@ -26,6 +26,9 @@ interface LocalGalleryMediaPlugin {
   startSyncService(options: { title: string; text: string }): Promise<{ ok: boolean }>;
   updateSyncService(options: { title: string; text: string; progress?: number; max?: number }): Promise<{ ok: boolean }>;
   stopSyncService(): Promise<{ ok: boolean }>;
+  checkBatteryOptimization(): Promise<{ ignoring: boolean }>;
+  requestBatteryOptimizationExemption(): Promise<{ ignoring: boolean; requested?: boolean }>;
+
 }
 
 const LocalGalleryMedia = registerPlugin<LocalGalleryMediaPlugin>("LocalGalleryMedia");
