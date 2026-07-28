@@ -19,6 +19,8 @@ import {
   stopSyncForegroundService,
 } from "@/lib/native";
 import { Network } from "@capacitor/network";
+import { logSync } from "@/lib/diagnostics";
+
 
 
 const SETTINGS_KEY = "syncSettings";
