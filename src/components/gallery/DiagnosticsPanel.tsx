@@ -55,25 +55,36 @@ export function DiagnosticsPanel() {
     }
   };
 
+  const reportName = () =>
+    `telemetry-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+
   const downloadReport = async () => {
     const report = buildDiagnosticsReport();
-    const blob = new Blob([report], { type: "text/plain;charset=utf-8" });
-    const name = `telemetry-${new Date().toISOString().replace(/[:.]/g, "-")}.log`;
-    if (isNative()) {
-      const uri = await saveBlobToDevice(name, blob);
-      if (uri) { toast.success(`حُفظ: ${name}`); return; }
+    const name = reportName();
+    try {
+      if (isNative()) {
+        const uri = await saveBlobToDevice(name, new Blob([report], { type: "text/plain;charset=utf-8" }));
+        if (uri) { toast.success(`حُفظ كملف نصي: ${name}`); return; }
+      }
+      const blob = new Blob([report], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      toast.success("تم التنزيل");
+    } catch (e) {
+      toast.error(`تعذّر الحفظ: ${e instanceof Error ? e.message : String(e)}`);
     }
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = name;
-    document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
-    toast.success("تم التنزيل");
   };
 
   const shareReport = async () => {
     const report = buildDiagnosticsReport();
     try {
+      if (isNative()) {
+        const ok = await shareTextAsFile(reportName(), report);
+        if (ok) return;
+      }
       const ok = await nativeShareText("Telemetry Report", report);
       if (!ok) await copyReport();
     } catch {
