@@ -114,11 +114,14 @@ export default defineConfig(({ mode }) => ({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __OTA_REPO__: JSON.stringify(process.env.GITHUB_REPOSITORY || process.env.VITE_OTA_REPO || ""),
+    global: "globalThis",
   },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      buffer: "buffer",
     },
   },
+
 }));
 
