@@ -7,7 +7,6 @@ import { useTelegramFeed, useRemoteAssetUrls } from "@/hooks/useTelegramFeed";
 import { photoDb } from "@/lib/photoDb";
 import { PhotoGrid } from "./PhotoGrid";
 import { Lightbox } from "./Lightbox";
-import { EmptyState } from "./EmptyState";
 import { useGridDensity } from "@/hooks/useGridDensity";
 import { runViewTransition } from "@/lib/viewTransition";
 import type { MockPhoto } from "@/lib/mockPhotos";
