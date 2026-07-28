@@ -55,8 +55,10 @@ export function useNativeInit() {
     });
 
     return () => {
+      window.clearTimeout(scanTimer);
       void appSub.then((h) => h.remove()).catch(() => undefined);
       void netSub.then((h) => h.remove()).catch(() => undefined);
     };
+
   }, []);
 }
