@@ -176,8 +176,14 @@ export function TelegramScreen() {
 
       {accountReady && (
         <div className="mx-4 mb-3 rounded-2xl border border-border bg-card px-4 py-3 text-xs font-semibold">
-          القناة الحالية: <span className="text-primary">{target?.title}</span> · اضغط «تحديث» لقراءة كل المحفوظات.
+          القناة الحالية: <span className="text-primary">{target?.title}</span>
+          {thumbing
+            ? ` · جارٍ تحميل المعاينات ${thumbProgress.done}/${thumbProgress.total}`
+            : busy
+              ? " · جارٍ قراءة المحفوظات…"
+              : " · اضغط «تحديث» لإعادة القراءة."}
         </div>
+
       )}
 
       {botReady && !accountReady && assets.length === 0 && (
