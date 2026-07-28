@@ -127,6 +127,8 @@ export default defineConfig(({ mode }) => ({
       socks: path.resolve(__dirname, "./src/lib/shims/node-net.ts"),
       net: path.resolve(__dirname, "./src/lib/shims/node-net.ts"),
       tls: path.resolve(__dirname, "./src/lib/shims/node-net.ts"),
+      os: path.resolve(__dirname, "./src/lib/shims/node-os.ts"),
+      "node:os": path.resolve(__dirname, "./src/lib/shims/node-os.ts"),
     },
   },
   optimizeDeps: {
