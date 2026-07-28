@@ -289,7 +289,15 @@ const toDataUrl = (bytes: Uint8Array, mime = "image/jpeg") => {
   return `data:${mime};base64,${btoa(bin)}`;
 };
 
-/** Read the full media history of the selected channel (bot-free). */
+/** Cache of raw messages so thumbnails can be fetched lazily afterwards. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const msgCache = new Map<number, any>();
+
+/**
+ * Read the media history of the selected channel (bot-free).
+ * METADATA ONLY — no bytes are downloaded here, so 1000+ items land in the
+ * grid within seconds. Thumbnails are fetched afterwards by `fetchMessageThumb`.
+ */
 export async function fetchChannelMedia(
   limit = 200,
   onItem?: (item: MtMediaItem) => Promise<void> | void,
@@ -321,7 +329,6 @@ export async function fetchChannelMedia(
   let count = 0;
   let skippedNoMedia = 0;
   let skippedMime = 0;
-  let thumbFails = 0;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const m of messages as any[]) {
     // gramjs exposes .document/.photo getters, but forwarded/album items are
@@ -343,25 +350,13 @@ export async function fetchChannelMedia(
     const nameAttr = attrs.find((a) => a.fileName);
     const videoAttr = attrs.find((a) => a.duration != null && a.w != null);
     const imgAttr = attrs.find((a) => a.w != null && a.duration == null);
-
-    let thumbDataUrl: string | undefined;
-    // Largest available thumbnail first; some documents only carry index 0.
-    for (const thumb of [-1, 0]) {
-      try {
-        const buf = await c.downloadMedia(m, { thumb });
-        if (buf && buf.length) { thumbDataUrl = toDataUrl(new Uint8Array(buf)); break; }
-      } catch { /* try the next thumb index */ }
-    }
-    // Plain photos have no document thumb — pull the (small) photo itself.
-    if (!thumbDataUrl && photo && !doc) {
-      try {
-        const buf = await c.downloadMedia(m);
-        if (buf && buf.length) thumbDataUrl = toDataUrl(new Uint8Array(buf));
-      } catch (e) { thumbFails++; logTg("feed", `thumb failed for msg ${m.id}`, e, "warn"); }
-    }
-    if (!thumbDataUrl) thumbFails++;
+    // Plain photos carry their dimensions on the largest PhotoSize.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sizes: any[] = photo?.sizes ?? [];
+    const biggest = sizes.filter((s) => s.w != null).sort((a, b) => a.w - b.w).pop();
 
     const isVideoFinal = isVideo || /\.(mp4|mov|mkv|webm|avi)$/i.test(nameGuess);
+    msgCache.set(Number(m.id), m);
     const item: MtMediaItem = {
       messageId: Number(m.id),
       chatId: target.id,
@@ -370,14 +365,14 @@ export async function fetchChannelMedia(
       size: Number(doc?.size ?? 0),
       mime,
       kind: isVideoFinal ? "video" : "image",
-      width: videoAttr?.w ?? imgAttr?.w,
-      height: videoAttr?.h ?? imgAttr?.h,
+      width: videoAttr?.w ?? imgAttr?.w ?? biggest?.w,
+      height: videoAttr?.h ?? imgAttr?.h ?? biggest?.h,
       duration: videoAttr?.duration,
-      thumbDataUrl,
     };
     try { await onItem?.(item); count++; }
     catch (e) { logTg("feed", `store failed for msg ${m.id}`, e, "error"); }
   }
+
   logTg("feed", "history read complete", { imported: count, skippedNoMedia, skippedMime, thumbFails });
   return count;
 }
