@@ -196,6 +196,7 @@ export async function listTargets(): Promise<MtTarget[]> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const dialogs = await (client as any).getDialogs({ limit: 200 });
   const out: MtTarget[] = [];
+  const seen = new Set<string>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const d of dialogs as any[]) {
     const e = d.entity;
@@ -204,9 +205,12 @@ export async function listTargets(): Promise<MtTarget[]> {
     const isMe = d.isUser && e.self;
     if (!isChannel && !isMe) continue;
     if (isChannel && e.broadcast && e.adminRights == null && !e.creator) continue;
+    const id = String(e.id);
+    if (seen.has(id)) continue; // a chat can surface twice (folders/archive)
+    seen.add(id);
     out.push({
-      id: String(e.id),
-      title: isMe ? "الرسائل المحفوظة" : (d.title || e.title || e.username || String(e.id)),
+      id,
+      title: isMe ? "الرسائل المحفوظة" : (d.title || e.title || e.username || id),
       username: e.username ?? undefined,
     });
   }
