@@ -112,9 +112,29 @@ export async function runSyncCycle(): Promise<{ processed: number; failed: numbe
   const cfg = await photoDb.providers.get("telegram");
   if (!cfg?.configured || !cfg.botToken || !cfg.chatId) return { processed: 0, failed: 0 };
 
-  const deviceAssets = await photoDb.assets.where("provider").equals("device").toArray();
-  const unsynced = deviceAssets.filter((a) => a.syncedAt == null && (a.blob || a.localUri));
+  const allAssets = await photoDb.assets.toArray();
+  // Signature of everything already living on Telegram, so a re-indexed copy of
+  // the same file is marked synced instead of uploaded a second time.
+  const sig = (a: MediaAsset) => `${a.name}|${a.size}`;
+  const uploaded = new Set(
+    allAssets.filter((a) => a.syncedAt != null || a.remoteFileId).map(sig),
+  );
+
+  const candidates = allAssets.filter(
+    (a) => a.provider === "device" && a.syncedAt == null && (a.blob || a.localUri),
+  );
+  const unsynced: MediaAsset[] = [];
+  for (const a of candidates) {
+    if (uploaded.has(sig(a))) {
+      // Already on Telegram under another local id — just retire the duplicate.
+      await photoDb.assets.update(a.id, { syncedAt: Date.now(), blob: undefined });
+      continue;
+    }
+    uploaded.add(sig(a));
+    unsynced.push(a);
+  }
   if (unsynced.length === 0) return { processed: 0, failed: 0 };
+
 
   emit({ running: true, total: unsynced.length, done: 0, failed: 0, currentName: undefined, lastError: undefined });
   void startSyncForegroundService("جاري المزامنة", `0 / ${unsynced.length}`);
