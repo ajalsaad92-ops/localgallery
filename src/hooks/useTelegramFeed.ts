@@ -6,7 +6,7 @@ import {
   telegramGetFilePath,
   telegramFileUrl,
 } from "@/lib/providers/telegram";
-import { logNative } from "@/lib/diagnostics";
+import { logNative, logTg } from "@/lib/diagnostics";
 
 const OFFSET_KEY = "tg:updates:offset";
 
