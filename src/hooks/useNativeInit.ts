@@ -41,10 +41,14 @@ export function useNativeInit() {
 
     const runSync = () => { void runSyncCycle().catch(() => undefined); };
 
+    // Index the whole device gallery in the background shortly after launch.
+    const scanTimer = window.setTimeout(() => { void backgroundScan(); }, 1500);
+
     const appSub = App.addListener("appStateChange", (s) => {
       logNative("app", `state ${s.isActive ? "active" : "background"}`);
-      if (s.isActive) runSync();
+      if (s.isActive) { runSync(); void backgroundScan(); }
     });
+
     const netSub = Network.addListener("networkStatusChange", (s) => {
       logNative("network", `${s.connected ? "online" : "offline"} (${s.connectionType})`);
       if (s.connected) runSync();
