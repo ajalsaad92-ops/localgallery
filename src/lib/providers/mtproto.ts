@@ -241,13 +241,23 @@ export async function uploadToTarget(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const c = client as any;
   const entity = await resolveEntity(c, target);
-  const msg = await c.sendFile(entity, {
-    file,
-    forceDocument: true,
-    workers: 1,
-    progressCallback: onProgress ? (p: number) => onProgress(p) : undefined,
-  });
-  return { messageId: Number(msg.id), chatId: target.id };
+  const big = file.size > 10 * 1024 * 1024;
+  logTg("upload", `sendFile → ${target.title}`, { name: file.name, mime: file.type, bytes: file.size });
+  try {
+    const msg = await c.sendFile(entity, {
+      file,
+      forceDocument: true,
+      // More workers keep large videos from stalling on a single connection.
+      workers: big ? 4 : 1,
+      progressCallback: onProgress ? (p: number) => onProgress(p) : undefined,
+    });
+    logTg("upload", `sendFile ok`, { name: file.name, messageId: Number(msg.id) });
+    return { messageId: Number(msg.id), chatId: target.id };
+  } catch (e) {
+    logTg("upload", `sendFile failed: ${file.name}`, e, "error");
+    throw e;
+  }
+
 }
 
 export interface MtMediaItem {
