@@ -92,8 +92,34 @@ jobs:
           retention-days: 90
 
 
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
+      - name: Cache npm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json', 'package.json') }}
+          restore-keys: npm-${{ runner.os }}-
+
+      - name: Install dependencies (with retries)
+        run: |
+          npm config set fetch-retries 6
+          npm config set fetch-retry-mintimeout 20000
+          npm config set fetch-retry-maxtimeout 180000
+          npm config set fetch-timeout 900000
+          npm config set maxsockets 5
+          npm config set registry https://registry.npmjs.org/
+
+          for attempt in 1 2 3 4; do
+            echo "::group::npm install attempt $attempt"
+            if npm install --no-audit --no-fund --prefer-offline; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "install failed (attempt $attempt), retrying in $((attempt * 20))s..."
+            sleep $((attempt * 20))
+          done
+          echo "npm install failed after 4 attempts"
+          exit 1
 
       - name: Write version into package.json
         run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
