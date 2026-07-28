@@ -15,6 +15,8 @@ export const platform = () => Capacitor.getPlatform(); // "ios" | "android" | "w
 
 type NativePermissionState = "granted" | "denied" | "prompt" | "prompt-with-rationale" | "unknown";
 
+export type SyncCommand = "pause" | "resume" | "stop";
+
 interface LocalGalleryMediaPlugin {
   checkGalleryPermissions(): Promise<{ media: NativePermissionState }>;
   requestGalleryPermissions(): Promise<{ media: NativePermissionState }>;
@@ -28,10 +30,19 @@ interface LocalGalleryMediaPlugin {
   stopSyncService(): Promise<{ ok: boolean }>;
   checkBatteryOptimization(): Promise<{ ignoring: boolean }>;
   requestBatteryOptimizationExemption(): Promise<{ ignoring: boolean; requested?: boolean }>;
-
+  addListener(
+    event: "syncCommand",
+    cb: (data: { action: SyncCommand }) => void,
+  ): Promise<{ remove: () => Promise<void> }>;
 }
 
-const LocalGalleryMedia = registerPlugin<LocalGalleryMediaPlugin>("LocalGalleryMedia");
+/**
+ * Single registration for the whole app. Registering the same plugin name from
+ * more than one module makes Capacitor warn ("already registered") and drops
+ * the second instance, so every consumer must import this one.
+ */
+export const LocalGalleryMedia = registerPlugin<LocalGalleryMediaPlugin>("LocalGalleryMedia");
+
 
 export interface NativeGalleryAsset {
   id: string;
