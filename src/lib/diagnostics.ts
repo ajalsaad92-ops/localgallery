@@ -79,6 +79,57 @@ function safeStringify(v: unknown) {
   try { return JSON.stringify(v, null, 2); } catch { return String(v); }
 }
 
+/**
+ * Describe anything the console was given. Plain JSON.stringify turns Errors,
+ * DOM events and Capacitor rejections into a useless "{}" because their fields
+ * are non-enumerable — this digs the real message out instead.
+ */
+export function describeValue(v: unknown, depth = 0): string {
+  if (v == null) return String(v);
+  if (typeof v === "string") return v;
+  if (typeof v !== "object") return String(v);
+
+  if (v instanceof Error) {
+    const extra = Object.getOwnPropertyNames(v)
+      .filter((k) => !["name", "message", "stack"].includes(k))
+      .map((k) => `${k}=${String((v as unknown as Record<string, unknown>)[k])}`)
+      .join(" ");
+    return `${v.name}: ${v.message}${extra ? ` (${extra})` : ""}${v.stack ? `\n${v.stack}` : ""}`;
+  }
+  if (typeof ErrorEvent !== "undefined" && v instanceof ErrorEvent) {
+    return `ErrorEvent: ${v.message} @ ${v.filename}:${v.lineno}:${v.colno}${v.error ? `\n${describeValue(v.error, depth + 1)}` : ""}`;
+  }
+  if (typeof PromiseRejectionEvent !== "undefined" && v instanceof PromiseRejectionEvent) {
+    return `UnhandledRejection: ${describeValue(v.reason, depth + 1)}`;
+  }
+  if (typeof Event !== "undefined" && v instanceof Event) {
+    const t = v.target as { src?: string; currentSrc?: string; tagName?: string } | null;
+    return `Event<${v.type}>${t?.tagName ? ` on ${t.tagName.toLowerCase()}` : ""}${t?.currentSrc || t?.src ? ` src=${t.currentSrc || t.src}` : ""}`;
+  }
+
+  const obj = v as Record<string, unknown>;
+  // Capacitor / fetch style rejections: keep the useful fields even when the
+  // object is otherwise empty.
+  const known = ["message", "errorMessage", "error", "code", "status", "statusText", "name", "data"]
+    .filter((k) => obj[k] != null)
+    .map((k) => `${k}: ${typeof obj[k] === "object" && depth < 2 ? describeValue(obj[k], depth + 1) : String(obj[k])}`);
+  if (known.length) return known.join(" · ");
+
+  const json = safeStringify(v);
+  if (json && json !== "{}") return json;
+  // Truly opaque object — fall back to whatever its own props / toString say.
+  const props = Object.getOwnPropertyNames(v);
+  if (props.length) {
+    return props.slice(0, 12)
+      .map((k) => { try { return `${k}: ${String(obj[k])}`; } catch { return `${k}: ?`; } })
+      .join(" · ");
+  }
+  const s = Object.prototype.toString.call(v);
+  try { const own = String(v); if (own !== "[object Object]") return own; } catch { /* ignore */ }
+  return s;
+}
+
+
 export function logDiag(
   level: DiagLevel,
   scope: string,
