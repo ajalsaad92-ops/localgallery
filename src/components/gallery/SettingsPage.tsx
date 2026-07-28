@@ -9,6 +9,7 @@ import { useSyncSettings } from "@/hooks/useSyncEngine";
 import { setSyncSettings } from "@/lib/syncEngine";
 import { cn } from "@/lib/utils";
 import { checkForUpdate, launchApkInstall, type UpdateInfo } from "@/lib/ota";
+import { TelegramAccountCard } from "./TelegramAccountCard";
 
 interface Props { onBack: () => void; onOpenDiagnostics: () => void }
 
@@ -89,6 +90,8 @@ export function SettingsPage({ onBack, onOpenDiagnostics }: Props) {
             <li>تبويب «معرض تليكرام» يعرض كل صورة رُفعت (حتى المرفوعة قبلاً).</li>
           </ol>
         </section>
+
+        <TelegramAccountCard />
 
         {/* Bot */}
         <section className="rounded-2xl border border-border bg-card p-4">
