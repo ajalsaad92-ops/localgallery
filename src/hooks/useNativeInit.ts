@@ -5,7 +5,25 @@ import { SplashScreen } from "@capacitor/splash-screen";
 import { Network } from "@capacitor/network";
 import { isNative } from "@/lib/native";
 import { runSyncCycle } from "@/lib/syncEngine";
+import { canScanDeviceGallery, scanDeviceGallery } from "@/lib/deviceMedia";
 import { logNative, logTimeline } from "@/lib/diagnostics";
+
+/** Full-gallery indexing, at most once per app session, never blocking the UI. */
+let scanning = false;
+async function backgroundScan() {
+  if (scanning || !canScanDeviceGallery()) return;
+  scanning = true;
+  try {
+    const inserted = await scanDeviceGallery();
+    logNative("scan", `background gallery scan done (+${inserted})`);
+    if (inserted > 0) void runSyncCycle().catch(() => undefined);
+  } catch (e) {
+    logNative("scan", "background gallery scan failed", e);
+  } finally {
+    scanning = false;
+  }
+}
+
 
 export function useNativeInit() {
   useEffect(() => {
@@ -23,18 +41,24 @@ export function useNativeInit() {
 
     const runSync = () => { void runSyncCycle().catch(() => undefined); };
 
+    // Index the whole device gallery in the background shortly after launch.
+    const scanTimer = window.setTimeout(() => { void backgroundScan(); }, 1500);
+
     const appSub = App.addListener("appStateChange", (s) => {
       logNative("app", `state ${s.isActive ? "active" : "background"}`);
-      if (s.isActive) runSync();
+      if (s.isActive) { runSync(); void backgroundScan(); }
     });
+
     const netSub = Network.addListener("networkStatusChange", (s) => {
       logNative("network", `${s.connected ? "online" : "offline"} (${s.connectionType})`);
       if (s.connected) runSync();
     });
 
     return () => {
+      window.clearTimeout(scanTimer);
       void appSub.then((h) => h.remove()).catch(() => undefined);
       void netSub.then((h) => h.remove()).catch(() => undefined);
     };
+
   }, []);
 }

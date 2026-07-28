@@ -2,58 +2,57 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Localphotos Pro — Pure-black gallery design system (Google Photos parity).
+/* TeleGallery — brutalist black + electric-ember design system.
    All colors are HSL semantic tokens. */
 
 @layer base {
   :root {
-    /* Pure black gallery — matches Google Photos */
-    --background: 0 0% 0%;              /* #000 */
-    --foreground: 210 15% 92%;          /* #e8eaed */
+    --background: 0 0% 3%;
+    --foreground: 30 12% 96%;
 
-    --card: 0 0% 8%;                    /* #141414 */
-    --card-foreground: 210 15% 92%;
+    --card: 0 0% 7%;
+    --card-foreground: 30 12% 96%;
 
-    --popover: 0 0% 10%;
-    --popover-foreground: 210 15% 92%;
+    --popover: 0 0% 8%;
+    --popover-foreground: 30 12% 96%;
 
-    --primary: 217 89% 76%;             /* #8ab4f8 — Google-blue accent */
-    --primary-foreground: 220 25% 12%;
+    /* Electric ember — the single loud accent */
+    --primary: 14 100% 55%;
+    --primary-foreground: 0 0% 100%;
 
-    --secondary: 0 0% 12%;              /* #1f1f1f */
-    --secondary-foreground: 210 15% 92%;
+    --secondary: 0 0% 11%;
+    --secondary-foreground: 30 12% 96%;
 
-    --muted: 0 0% 14%;
-    --muted-foreground: 220 6% 65%;     /* #9aa0a6 */
+    --muted: 0 0% 13%;
+    --muted-foreground: 30 5% 62%;
 
-    --accent: 0 0% 16%;
-    --accent-foreground: 210 15% 95%;
+    --accent: 42 100% 58%;
+    --accent-foreground: 0 0% 8%;
 
-    --destructive: 4 90% 62%;
-    --destructive-foreground: 210 15% 98%;
+    --destructive: 0 90% 58%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 0 0% 16%;
-    --input: 0 0% 16%;
-    --ring: 217 89% 76%;
+    --border: 0 0% 15%;
+    --input: 0 0% 15%;
+    --ring: 14 100% 55%;
 
-    --radius: 0.75rem;
+    --radius: 1rem;
 
-    /* Sidebar tokens */
     --sidebar-background: 0 0% 4%;
-    --sidebar-foreground: 210 15% 88%;
-    --sidebar-primary: 217 89% 76%;
-    --sidebar-primary-foreground: 220 25% 12%;
+    --sidebar-foreground: 30 12% 92%;
+    --sidebar-primary: 14 100% 55%;
+    --sidebar-primary-foreground: 0 0% 100%;
     --sidebar-accent: 0 0% 10%;
-    --sidebar-accent-foreground: 210 15% 95%;
-    --sidebar-border: 0 0% 12%;
-    --sidebar-ring: 217 89% 76%;
+    --sidebar-accent-foreground: 30 12% 96%;
+    --sidebar-border: 0 0% 13%;
+    --sidebar-ring: 14 100% 55%;
 
-    /* Gallery-specific tokens */
-    --surface-elevated: 0 0% 12%;
+    --surface-elevated: 0 0% 10%;
     --overlay: 0 0% 0%;
-    --gradient-hero: linear-gradient(135deg, hsl(217 89% 76% / 0.15), hsl(280 70% 70% / 0.05));
+    --gradient-hero: linear-gradient(135deg, hsl(14 100% 55% / 0.28), hsl(42 100% 58% / 0.08) 60%, transparent);
+    --gradient-hot: linear-gradient(100deg, hsl(14 100% 55%), hsl(42 100% 58%));
     --shadow-lightbox: 0 30px 80px -20px hsl(0 0% 0% / 0.9);
-    --shadow-fab: 0 8px 24px -4px hsl(217 89% 40% / 0.5);
+    --shadow-fab: 0 10px 30px -6px hsl(14 100% 55% / 0.55);
   }
 }
 
@@ -179,5 +178,21 @@
   ::view-transition-group(active-photo) {
     animation-duration: 340ms;
     animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}
+
+@layer utilities {
+  .bg-hot { background-image: var(--gradient-hot); }
+  .text-hot {
+    background-image: var(--gradient-hot);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .hero-glow { background-image: var(--gradient-hero); }
+  .headline {
+    font-weight: 900;
+    letter-spacing: -0.02em;
+    line-height: 1.05;
   }
 }
