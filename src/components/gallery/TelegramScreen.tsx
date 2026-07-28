@@ -3,7 +3,13 @@ import { Loader2, RefreshCw, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { useMediaAssets } from "@/hooks/useMediaAssets";
 import { useProviders } from "@/hooks/useProviders";
-import { useTelegramFeed, useRemoteAssetUrls } from "@/hooks/useTelegramFeed";
+import {
+  useTelegramFeed,
+  useRemoteAssetUrls,
+  importChannelHistory,
+  resolveRemoteUrl,
+} from "@/hooks/useTelegramFeed";
+import { getSavedTarget, getClient, type MtTarget } from "@/lib/providers/mtproto";
 import { photoDb } from "@/lib/photoDb";
 import { PhotoGrid } from "./PhotoGrid";
 import { Lightbox } from "./Lightbox";
@@ -14,9 +20,25 @@ import type { MockPhoto } from "@/lib/mockPhotos";
 export function TelegramScreen() {
   const { providers } = useProviders();
   const tg = providers.get("telegram");
-  const ready = !!tg?.configured && !!tg.botToken;
+  const botReady = !!tg?.configured && !!tg.botToken;
+  const [target, setTarget] = useState<MtTarget | null>(null);
+  const [accountReady, setAccountReady] = useState(false);
+  const [extraFull, setExtraFull] = useState<Map<string, string>>(new Map());
+  const ready = botReady || accountReady;
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const t = await getSavedTarget();
+      const c = await getClient();
+      if (!alive) return;
+      setTarget(t);
+      setAccountReady(!!t && !!c);
+    })();
+    return () => { alive = false; };
+  }, []);
   const [pollTick, setPollTick] = useState(0);
-  const { lastError, lastPolledAt } = useTelegramFeed(ready, 15000, pollTick);
+  const { lastError, lastPolledAt } = useTelegramFeed(botReady, 15000, pollTick);
   const assets = useMediaAssets({ kind: "telegram-remote" });
   const urls = useRemoteAssetUrls(assets);
   const { density } = useGridDensity();
@@ -24,8 +46,8 @@ export function TelegramScreen() {
   const [busy, setBusy] = useState(false);
 
   const photos = useMemo<MockPhoto[]>(() => assets.map((a) => {
-    const full = urls.full.get(a.id);
-    const thumb = urls.thumb.get(a.id);
+    const full = urls.full.get(a.id) ?? extraFull.get(a.id);
+    const thumb = urls.thumb.get(a.id) ?? a.posterDataUrl;
     const isHeic = /image\/(heic|heif)/i.test(a.mime);
     const isVideo = a.kind === "video";
     // HEIC can't render in <img>. Videos have no image bytes.
@@ -42,7 +64,7 @@ export function TelegramScreen() {
       kind: isVideo ? "video" : "image",
       duration: a.duration, mime: a.mime, provider: a.provider,
     };
-  }), [assets, urls]);
+  }), [assets, urls, extraFull]);
 
   useEffect(() => {
     if (!busy) return;
@@ -50,7 +72,31 @@ export function TelegramScreen() {
     return () => clearTimeout(t);
   }, [busy]);
 
-  const refresh = () => { setBusy(true); setPollTick((t) => t + 1); };
+  const refresh = async () => {
+    setBusy(true);
+    setPollTick((t) => t + 1);
+    if (accountReady) {
+      try {
+        const n = await importChannelHistory(300);
+        toast.success(`تمت قراءة ${n} عنصراً من ${target?.title ?? "القناة"}`);
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : String(e));
+      }
+    }
+    setBusy(false);
+  };
+
+  /** MTProto items stream on demand — fetch the full file when opening it. */
+  const openAt = async (i: number) => {
+    const a = assets[i];
+    if (a && !a.remoteFileId && a.remoteMessageId && !extraFull.has(a.id)) {
+      try {
+        const url = await resolveRemoteUrl(a);
+        if (url) setExtraFull((m) => new Map(m).set(a.id, url));
+      } catch { /* keep the thumbnail */ }
+    }
+    runViewTransition(() => setLightbox(i));
+  };
 
   const resync = async () => {
     setBusy(true);
@@ -96,7 +142,7 @@ export function TelegramScreen() {
 
       {!ready && (
         <div className="mx-4 mb-3 rounded-2xl border border-primary/40 bg-primary/10 p-4 text-sm font-semibold">
-          أضف بوت تليكرام من «ضبط» لعرض صور القناة.
+          اربط حسابك الشخصي واختر قناة الحفظ من «ضبط» لعرض كل صور القناة (بدون بوت).
         </div>
       )}
       {lastError && (
@@ -105,7 +151,13 @@ export function TelegramScreen() {
         </div>
       )}
 
-      {ready && assets.length === 0 && (
+      {accountReady && (
+        <div className="mx-4 mb-3 rounded-2xl border border-border bg-card px-4 py-3 text-xs font-semibold">
+          القناة الحالية: <span className="text-primary">{target?.title}</span> · اضغط «تحديث» لقراءة كل المحفوظات.
+        </div>
+      )}
+
+      {botReady && !accountReady && assets.length === 0 && (
         <div className="mx-4 mt-4 rounded-xl border border-border bg-card p-4 text-xs leading-relaxed text-muted-foreground">
           <p className="mb-2 font-semibold text-foreground">لماذا لا أرى صوري القديمة؟</p>
           <p className="mb-2">
@@ -127,7 +179,7 @@ export function TelegramScreen() {
       <div className="px-2 py-3">
         <PhotoGrid
           photos={photos}
-          onOpen={(i) => runViewTransition(() => setLightbox(i))}
+          onOpen={(i) => void openAt(i)}
           density={density}
           activeId={lightbox != null ? photos[lightbox]?.id : null}
           emptyContent={null}

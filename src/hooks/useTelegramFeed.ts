@@ -176,8 +176,42 @@ export function useTelegramFeed(enabled: boolean, intervalMs = 15000, trigger: n
   return { lastError, lastPolledAt };
 }
 
+/**
+ * Import the full media history of the selected channel through the linked
+ * personal account (MTProto). Unlike the bot feed this reaches old messages.
+ */
+export async function importChannelHistory(limit = 300): Promise<number> {
+  const { fetchChannelMedia } = await import("@/lib/providers/mtproto");
+  return fetchChannelMedia(limit, async (item) => {
+    const id = `tgm-${item.chatId}-${item.messageId}`;
+    const existing = await photoDb.assets.get(id);
+    const base: Partial<MediaAsset> = {
+      provider: "telegram-remote",
+      remoteMessageId: item.messageId,
+      remoteChatId: item.chatId,
+      name: item.name,
+      size: item.size,
+      mime: item.mime,
+      kind: item.kind,
+      width: item.width,
+      height: item.height,
+      duration: item.duration,
+      date: item.date || Date.now(),
+      posterDataUrl: item.thumbDataUrl,
+    };
+    if (existing) await photoDb.assets.update(id, base);
+    else await photoDb.assets.put({ id, createdAt: Date.now(), ...base } as MediaAsset);
+  });
+}
+
 /** Resolve a full-size URL for a remote asset (getFile → file/bot). */
 export async function resolveRemoteUrl(asset: MediaAsset): Promise<string | null> {
+  // Personal-account items have no bot file id — stream them through MTProto.
+  if (!asset.remoteFileId && asset.remoteMessageId && asset.remoteChatId) {
+    const { downloadMessageBlob } = await import("@/lib/providers/mtproto");
+    const blob = await downloadMessageBlob(asset.remoteMessageId);
+    return blob ? URL.createObjectURL(blob) : null;
+  }
   if (!asset.remoteFileId) return null;
   const cfg = await photoDb.providers.get("telegram");
   if (!cfg?.botToken) return null;
@@ -186,6 +220,7 @@ export async function resolveRemoteUrl(asset: MediaAsset): Promise<string | null
   await photoDb.assets.update(asset.id, { remoteFilePath: path });
   return telegramFileUrl(cfg.botToken, path);
 }
+
 
 export async function resolveThumbUrl(asset: MediaAsset): Promise<string | null> {
   if (!asset.thumbFileId) return null;

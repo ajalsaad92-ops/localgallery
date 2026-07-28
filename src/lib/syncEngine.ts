@@ -78,7 +78,7 @@ async function isWifiLike(): Promise<boolean> {
 }
 
 
-async function uploadOne(asset: MediaAsset, botToken: string, chatId: string, freeBlob: boolean) {
+async function readBlob(asset: MediaAsset): Promise<Blob> {
   let blob = asset.blob;
   if (!blob && asset.localUri) {
     const response = await fetch(asset.localUri);
@@ -86,6 +86,11 @@ async function uploadOne(asset: MediaAsset, botToken: string, chatId: string, fr
     blob = await response.blob();
   }
   if (!blob) throw new Error("لا يوجد ملف محلي للرفع");
+  return blob;
+}
+
+async function uploadOne(asset: MediaAsset, botToken: string, chatId: string, freeBlob: boolean) {
+  const blob = await readBlob(asset);
   const file = new File([blob], asset.name, { type: asset.mime || blob.type || "application/octet-stream" });
   const res = await telegramSendDocument(botToken, chatId, file);
   const patch: Partial<MediaAsset> = {
@@ -93,6 +98,25 @@ async function uploadOne(asset: MediaAsset, botToken: string, chatId: string, fr
     syncedAt: Date.now(),
     remoteFileId: res.fileId,
     remoteMessageId: res.messageId,
+  };
+  if (freeBlob) {
+    patch.blob = undefined;
+    patch.localUri = undefined;
+  }
+  await photoDb.assets.update(asset.id, patch);
+}
+
+/** Upload through the linked personal account (no bot involved). */
+async function uploadOneViaAccount(asset: MediaAsset, freeBlob: boolean) {
+  const { uploadToTarget } = await import("@/lib/providers/mtproto");
+  const blob = await readBlob(asset);
+  const file = new File([blob], asset.name, { type: asset.mime || blob.type || "application/octet-stream" });
+  const res = await uploadToTarget(file);
+  const patch: Partial<MediaAsset> = {
+    provider: "telegram-remote",
+    syncedAt: Date.now(),
+    remoteMessageId: res.messageId,
+    remoteChatId: res.chatId,
   };
   if (freeBlob) {
     patch.blob = undefined;
@@ -109,8 +133,16 @@ export async function runSyncCycle(): Promise<{ processed: number; failed: numbe
   if (!isOnline()) return { processed: 0, failed: 0 };
   if (settings.wifiOnly && !(await isWifiLike())) return { processed: 0, failed: 0 };
 
+  // Personal account (MTProto) wins when a target channel is selected —
+  // no bot token required, and files up to 2 GB are allowed.
+  const { getSavedTarget, getClient } = await import("@/lib/providers/mtproto");
+  const target = await getSavedTarget();
+  const accountReady = !!target && !!(await getClient());
+
   const cfg = await photoDb.providers.get("telegram");
-  if (!cfg?.configured || !cfg.botToken || !cfg.chatId) return { processed: 0, failed: 0 };
+  const botReady = !!cfg?.configured && !!cfg?.botToken && !!cfg?.chatId;
+  if (!accountReady && !botReady) return { processed: 0, failed: 0 };
+
 
   const allAssets = await photoDb.assets.toArray();
   // Signature of everything already living on Telegram, so a re-indexed copy of
@@ -157,9 +189,11 @@ export async function runSyncCycle(): Promise<{ processed: number; failed: numbe
         unsynced.length,
       );
       try {
-        await uploadOne(asset, cfg.botToken, cfg.chatId, now.freeBlobAfterSync);
+        if (accountReady) await uploadOneViaAccount(asset, now.freeBlobAfterSync);
+        else await uploadOne(asset, cfg!.botToken!, cfg!.chatId!, now.freeBlobAfterSync);
         done++;
         emit({ done });
+
       } catch (e) {
         failed++;
         emit({ failed, lastError: e instanceof Error ? e.message : String(e) });
