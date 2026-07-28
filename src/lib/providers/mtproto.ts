@@ -299,7 +299,7 @@ const msgCache = new Map<number, any>();
  * grid within seconds. Thumbnails are fetched afterwards by `fetchMessageThumb`.
  */
 export async function fetchChannelMedia(
-  limit = 200,
+  limit = 0,
   onItem?: (item: MtMediaItem) => Promise<void> | void,
 ): Promise<number> {
   const client = await getClient();
@@ -308,34 +308,24 @@ export async function fetchChannelMedia(
   if (!target) { logTg("feed", "no target channel selected", undefined, "warn"); throw new Error("اختر قناة الحفظ أولاً"); }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const c = client as any;
-  logTg("feed", `reading history of "${target.title}"`, { id: target.id, limit });
+  // limit <= 0 means "read the whole channel".
+  const cap = limit && limit > 0 ? limit : Number.MAX_SAFE_INTEGER;
+  logTg("feed", `reading history of "${target.title}"`, { id: target.id, limit: cap });
   const entity = await resolveEntity(c, target);
-  // Page manually: a single getMessages call caps out and silently returns few
-  // rows on big channels.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const messages: any[] = [];
-  let offsetId = 0;
-  while (messages.length < limit) {
-    const page = await c.getMessages(entity, { limit: Math.min(100, limit - messages.length), offsetId });
-    if (!page || page.length === 0) break;
-    messages.push(...page);
-    offsetId = Number(page[page.length - 1].id);
-    if (page.length < 2) break;
-  }
-  logTg("feed", `got ${messages.length} messages`);
-  if (messages.length === 0) {
-    logTg("feed", "channel returned no messages — check the selected channel", { id: target.id }, "warn");
-  }
+
   let count = 0;
+  let scanned = 0;
   let skippedNoMedia = 0;
   let skippedMime = 0;
+  let offsetId = 0;
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const m of messages as any[]) {
+  const handle = async (m: any) => {
     // gramjs exposes .document/.photo getters, but forwarded/album items are
     // sometimes only reachable through .media.
     const doc = m.document ?? m.media?.document ?? null;
     const photo = m.photo ?? m.media?.photo ?? null;
-    if (!doc && !photo) { skippedNoMedia++; continue; }
+    if (!doc && !photo) { skippedNoMedia++; return; }
     const mime: string = doc?.mimeType ?? "image/jpeg";
     const isVideo = mime.startsWith("video/");
     const isImage = mime.startsWith("image/") || (!doc && !!photo);
@@ -343,7 +333,7 @@ export async function fetchChannelMedia(
     // when the filename looks like media.
     const nameGuess: string = (doc?.attributes ?? []).find((a: { fileName?: string }) => a.fileName)?.fileName ?? "";
     const looksMedia = /\.(jpe?g|png|webp|gif|heic|heif|mp4|mov|mkv|webm|avi)$/i.test(nameGuess);
-    if (!isVideo && !isImage && !looksMedia) { skippedMime++; continue; }
+    if (!isVideo && !isImage && !looksMedia) { skippedMime++; return; }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const attrs: any[] = doc?.attributes ?? [];
@@ -371,11 +361,32 @@ export async function fetchChannelMedia(
     };
     try { await onItem?.(item); count++; }
     catch (e) { logTg("feed", `store failed for msg ${m.id}`, e, "error"); }
+  };
+
+  // Page manually from newest to oldest: one getMessages call caps out and
+  // silently returns few rows on big channels. Each page is stored right away
+  // so the grid keeps filling while older pages are still loading.
+  for (;;) {
+    if (scanned >= cap) break;
+    const pageSize = Math.min(100, cap - scanned);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const page: any[] = await c.getMessages(entity, { limit: pageSize, offsetId });
+    if (!page || page.length === 0) break;
+    for (const m of page) await handle(m);
+    scanned += page.length;
+    const lastId = Number(page[page.length - 1].id);
+    if (!Number.isFinite(lastId) || lastId <= 1 || lastId === offsetId) break;
+    offsetId = lastId;
+    logTg("feed", `page done`, { scanned, imported: count, offsetId });
   }
 
-  logTg("feed", "history read complete", { imported: count, skippedNoMedia, skippedMime });
+  if (scanned === 0) {
+    logTg("feed", "channel returned no messages — check the selected channel", { id: target.id }, "warn");
+  }
+  logTg("feed", "history read complete", { scanned, imported: count, skippedNoMedia, skippedMime });
   return count;
 }
+
 
 /**
  * Fetch a small preview for one message. Tries the cheap cached thumbnails

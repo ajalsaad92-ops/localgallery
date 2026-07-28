@@ -180,7 +180,7 @@ export function useTelegramFeed(enabled: boolean, intervalMs = 15000, trigger: n
  * Import the full media history of the selected channel through the linked
  * personal account (MTProto). Unlike the bot feed this reaches old messages.
  */
-export async function importChannelHistory(limit = 1000): Promise<number> {
+export async function importChannelHistory(limit = 0): Promise<number> {
   const { fetchChannelMedia } = await import("@/lib/providers/mtproto");
   let added = 0;
   let updated = 0;
