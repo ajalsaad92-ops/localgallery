@@ -5,7 +5,6 @@
  * export because gramjs does `import * as crypto from "crypto"` and then
  * reads `.default.randomBytes(...)`.
  */
-// @ts-expect-error - gramjs ships no types for this internal browser module
 import * as gramCrypto from "telegram/crypto/crypto";
 
 const webcrypto: Crypto =
