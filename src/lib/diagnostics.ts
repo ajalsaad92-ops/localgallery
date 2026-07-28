@@ -20,8 +20,11 @@ export type DiagCategory =
   | "perf"
   | "native"
   | "net"
+  | "sync"
+  | "tg"
   | "error"
   | "app";
+
 
 export interface DiagEntry {
   ts: number;
@@ -83,13 +86,16 @@ export function logDiag(
   detail?: unknown,
   category: DiagCategory = "app",
 ) {
-  // Only persist warnings and errors — keep info visible in the devtools
-  // console but out of the ring buffer so the panel and phone stay responsive.
-  if (level === "info") {
+  // Info is normally console-only so the phone stays responsive, BUT the
+  // sync + telegram flows are always recorded: they are the two things the
+  // user needs a precise trace of when nothing shows up / nothing uploads.
+  const keepInfo = category === "sync" || category === "tg";
+  if (level === "info" && !keepInfo) {
     // eslint-disable-next-line no-console
     console.log(`[${category}·${scope}]`, message, detail ?? "");
     return;
   }
+
   const entry: DiagEntry = {
     ts: Date.now(),
     level,
@@ -103,9 +109,10 @@ export function logDiag(
   buffer.push(entry);
   if (buffer.length > BUFFER_MAX) buffer.splice(0, buffer.length - BUFFER_MAX);
   // eslint-disable-next-line no-console
-  console[level === "error" ? "error" : "warn"](
+  console[level === "error" ? "error" : level === "warn" ? "warn" : "log"](
     `[${category}·${scope}]`, message, detail ?? "",
   );
+
   emit();
   schedulePersist();
 }
@@ -120,6 +127,11 @@ export const logPerf     = (scope: string, msg: string, d?: unknown) => logDiag(
 export const logNative   = (scope: string, msg: string, d?: unknown) => logDiag("info", scope, msg, d, "native");
 export const logNet      = (scope: string, msg: string, d?: unknown, lvl: DiagLevel = "info") => logDiag(lvl, scope, msg, d, "net");
 export const logError    = (scope: string, msg: string, d?: unknown) => logDiag("error", scope, msg, d, "error");
+/** Sync-engine trace — always kept, even at info level. */
+export const logSync     = (scope: string, msg: string, d?: unknown, lvl: DiagLevel = "info") => logDiag(lvl, scope, msg, d, "sync");
+/** Telegram (bot + personal account) trace — always kept, even at info level. */
+export const logTg       = (scope: string, msg: string, d?: unknown, lvl: DiagLevel = "info") => logDiag(lvl, scope, msg, d, "tg");
+
 
 // Small helper for timed operations. Usage: const t = mark(); ...; logPerf("ocr","done",{ms:t()})
 export function mark(): () => number {
@@ -254,6 +266,9 @@ export function buildDiagnosticsReport(): string {
     + section("7. Performance Log", renderEntries(byCat("perf")))
     + section("8. Native Behavior Log", renderEntries(byCat("native")))
     + section("9. Network Log", renderEntries(byCat("net")))
+    + section("9a. Sync Engine Trace", renderEntries(byCat("sync")))
+    + section("9b. Telegram Trace", renderEntries(byCat("tg")))
+
     + section("10. Error Log", renderEntries(byCat("error").concat(buffer.filter((e) => e.level === "error" && e.category !== "error"))))
     + section("Appendix: Full Chronological Log", renderEntries(buffer));
 }
