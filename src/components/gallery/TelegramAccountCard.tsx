@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Check, ExternalLink, Loader2, LogOut, ShieldCheck } from "lucide-react";
+import { Check, ExternalLink, Loader2, LogOut, RefreshCw, ShieldCheck } from "lucide-react";
 import {
   currentAccount,
   getSavedCreds,
@@ -8,8 +8,73 @@ import {
   requestCode,
   submitCode,
   submitPassword,
+  listTargets,
+  getSavedTarget,
+  saveTarget,
   type MtprotoAccount,
+  type MtTarget,
 } from "@/lib/providers/mtproto";
+
+function ChannelPicker() {
+  const [targets, setTargets] = useState<MtTarget[]>([]);
+  const [selected, setSelected] = useState<MtTarget | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => { void getSavedTarget().then(setSelected); }, []);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const list = await listTargets();
+      setTargets(list);
+      if (!list.length) toast.info("لم يتم العثور على قنوات/مجموعات");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally { setLoading(false); }
+  };
+
+  const choose = async (id: string) => {
+    const t = targets.find((x) => x.id === id) ?? null;
+    await saveTarget(t);
+    setSelected(t);
+    if (t) toast.success(`قناة الحفظ: ${t.title}`);
+  };
+
+  return (
+    <div className="mt-3 border-t border-border pt-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-xs font-bold">قناة الحفظ (الرفع والعرض)</p>
+        <button
+          onClick={load}
+          disabled={loading}
+          className="flex items-center gap-1.5 rounded-full bg-secondary px-3 py-1.5 text-[11px] font-semibold disabled:opacity-50"
+        >
+          {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+          جلب القنوات
+        </button>
+      </div>
+      <p className="mb-2 text-[11px] text-muted-foreground">
+        كل الصور ستُرفع إلى هذه القناة عبر حسابك مباشرة — لا حاجة للبوت إطلاقاً.
+      </p>
+      {targets.length > 0 ? (
+        <select
+          value={selected?.id ?? ""}
+          onChange={(e) => void choose(e.target.value)}
+          className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
+        >
+          <option value="">— اختر قناة —</option>
+          {targets.map((t) => (
+            <option key={t.id} value={t.id}>{t.title}</option>
+          ))}
+        </select>
+      ) : (
+        <p className="rounded-lg bg-secondary/50 px-3 py-2 text-xs font-semibold">
+          {selected ? `المحددة حالياً: ${selected.title}` : "اضغط «جلب القنوات» لاختيار الوجهة."}
+        </p>
+      )}
+    </div>
+  );
+}
 
 type Step = "creds" | "code" | "password" | "done";
 
@@ -134,6 +199,7 @@ export function TelegramAccountCard() {
             فصل
           </button>
         </div>
+        <ChannelPicker />
       </section>
     );
   }
