@@ -4,6 +4,8 @@
  * The session string is stored locally in IndexedDB (kv table).
  */
 import { photoDb } from "@/lib/photoDb";
+import { logTg } from "@/lib/diagnostics";
+
 
 const KEY_SESSION = "tg:user:session";
 const KEY_API = "tg:user:api";
