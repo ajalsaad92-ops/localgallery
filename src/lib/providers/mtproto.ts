@@ -274,22 +274,28 @@ export async function fetchChannelMedia(
   onItem?: (item: MtMediaItem) => Promise<void> | void,
 ): Promise<number> {
   const client = await getClient();
-  if (!client) throw new Error("لم يتم ربط الحساب الشخصي بعد");
+  if (!client) { logTg("feed", "no linked account", undefined, "warn"); throw new Error("لم يتم ربط الحساب الشخصي بعد"); }
   const target = await getSavedTarget();
-  if (!target) throw new Error("اختر قناة الحفظ أولاً");
+  if (!target) { logTg("feed", "no target channel selected", undefined, "warn"); throw new Error("اختر قناة الحفظ أولاً"); }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const c = client as any;
+  logTg("feed", `reading history of "${target.title}"`, { id: target.id, limit });
   const entity = await resolveEntity(c, target);
   const messages = await c.getMessages(entity, { limit });
+  logTg("feed", `got ${messages.length} messages`);
   let count = 0;
+  let skippedNoMedia = 0;
+  let skippedMime = 0;
+  let thumbFails = 0;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const m of messages as any[]) {
     const doc = m.document;
     const photo = m.photo;
-    if (!doc && !photo) continue;
+    if (!doc && !photo) { skippedNoMedia++; continue; }
     const mime: string = doc?.mimeType ?? "image/jpeg";
     const isVideo = mime.startsWith("video/");
-    if (!isVideo && !mime.startsWith("image/")) continue;
+    const isImage = mime.startsWith("image/") || (!doc && !!photo);
+    if (!isVideo && !isImage) { skippedMime++; continue; }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const attrs: any[] = doc?.attributes ?? [];
@@ -298,10 +304,21 @@ export async function fetchChannelMedia(
     const imgAttr = attrs.find((a) => a.w != null && a.duration == null);
 
     let thumbDataUrl: string | undefined;
-    try {
-      const buf = await c.downloadMedia(m, { thumb: 0 });
-      if (buf) thumbDataUrl = toDataUrl(new Uint8Array(buf));
-    } catch { /* no thumb */ }
+    // Largest available thumbnail first; some documents only carry index 0.
+    for (const thumb of [-1, 0]) {
+      try {
+        const buf = await c.downloadMedia(m, { thumb });
+        if (buf && buf.length) { thumbDataUrl = toDataUrl(new Uint8Array(buf)); break; }
+      } catch { /* try the next thumb index */ }
+    }
+    // Plain photos have no document thumb — pull the (small) photo itself.
+    if (!thumbDataUrl && photo && !doc) {
+      try {
+        const buf = await c.downloadMedia(m);
+        if (buf && buf.length) thumbDataUrl = toDataUrl(new Uint8Array(buf));
+      } catch (e) { thumbFails++; logTg("feed", `thumb failed for msg ${m.id}`, e, "warn"); }
+    }
+    if (!thumbDataUrl) thumbFails++;
 
     const item: MtMediaItem = {
       messageId: Number(m.id),
@@ -319,8 +336,10 @@ export async function fetchChannelMedia(
     await onItem?.(item);
     count++;
   }
+  logTg("feed", "history read complete", { imported: count, skippedNoMedia, skippedMime, thumbFails });
   return count;
 }
+
 
 /** Download the full bytes of a stored message (for the lightbox / save). */
 export async function downloadMessageBlob(messageId: number): Promise<Blob | null> {
