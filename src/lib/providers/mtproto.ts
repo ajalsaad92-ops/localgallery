@@ -248,8 +248,13 @@ export async function uploadToTarget(
   const big = file.size > 10 * 1024 * 1024;
   logTg("upload", `sendFile → ${target.title}`, { name: file.name, mime: file.type, bytes: file.size });
   try {
+    // gramjs in the browser rejects plain File objects ("Cannot use [object
+    // File] as file") — wrap the bytes in a CustomFile instead.
+    const { CustomFile } = await import("telegram/client/uploads");
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const custom = new CustomFile(file.name, bytes.length, file.name, bytes as unknown as Buffer);
     const msg = await c.sendFile(entity, {
-      file,
+      file: custom,
       forceDocument: true,
       // More workers keep large videos from stalling on a single connection.
       workers: big ? 4 : 1,
