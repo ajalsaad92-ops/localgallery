@@ -10,7 +10,7 @@ import {
 } from "@/lib/diagnostics";
 import { cn } from "@/lib/utils";
 import { confirmDialog } from "@/lib/confirmDialog";
-import { nativeShareText, saveBlobToDevice, isNative } from "@/lib/native";
+import { nativeShareText, saveBlobToDevice, shareTextAsFile, isNative } from "@/lib/native";
 
 /**
  * Warnings + errors only. Info logs stream to devtools console but are not
