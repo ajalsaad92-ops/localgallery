@@ -180,3 +180,19 @@
     animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
   }
 }
+
+@layer utilities {
+  .bg-hot { background-image: var(--gradient-hot); }
+  .text-hot {
+    background-image: var(--gradient-hot);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .hero-glow { background-image: var(--gradient-hero); }
+  .headline {
+    font-weight: 900;
+    letter-spacing: -0.02em;
+    line-height: 1.05;
+  }
+}
