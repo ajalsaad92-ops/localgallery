@@ -70,6 +70,8 @@ const PERMS = [
   '<uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>',
   '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>',
   '<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>',
+  '<uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>',
+
 ];
 
 
@@ -469,6 +471,52 @@ public class LocalGalleryMediaPlugin extends Plugin {
             call.reject("Install failed: " + e.getMessage(), e);
         }
     }
+
+    @PluginMethod
+    public void checkBatteryOptimization(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("ignoring", isIgnoringBatteryOptimizations());
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void requestBatteryOptimizationExemption(PluginCall call) {
+        JSObject ret = new JSObject();
+        try {
+            if (isIgnoringBatteryOptimizations()) {
+                ret.put("ignoring", true);
+                call.resolve(ret);
+                return;
+            }
+            Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+            intent.setData(Uri.parse("package:" + getContext().getPackageName()));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(intent);
+            ret.put("ignoring", false);
+            ret.put("requested", true);
+            call.resolve(ret);
+        } catch (Exception e) {
+            try {
+                Intent fallback = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+                fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(fallback);
+            } catch (Exception ignored) {}
+            ret.put("ignoring", false);
+            call.resolve(ret);
+        }
+    }
+
+    private boolean isIgnoringBatteryOptimizations() {
+        try {
+            android.os.PowerManager pm = (android.os.PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+            if (pm == null) return false;
+            return pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+
 
     @PluginMethod
     public void startSyncService(PluginCall call) {

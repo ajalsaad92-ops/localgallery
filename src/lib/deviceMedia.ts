@@ -76,6 +76,13 @@ async function insertFileAsset(file: File, id: string, meta?: Partial<NativeGall
 async function insertNativeAsset(item: NativeGalleryAsset): Promise<boolean> {
   const id = `device-${item.id}`;
   if (await photoDb.assets.get(id)) return false;
+  // Content-level dedupe: the same photo can reappear with a new MediaStore id
+  // (re-import, restored backup, moved folder). Never index/upload it twice.
+  if (item.date) {
+    const sameDay = await photoDb.assets.where("date").equals(item.date).toArray();
+    if (sameDay.some((a) => a.name === item.name && a.size === item.size)) return false;
+  }
+
   const asset: MediaAsset = {
     id,
     provider: "device",

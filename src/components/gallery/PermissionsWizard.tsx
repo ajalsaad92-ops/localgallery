@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import {
   isNative, prefGet, prefSet,
   requestNotifPermission, checkNotifPermission, checkGalleryPermission,
+  requestGalleryPermission, isIgnoringBatteryOptimizations, requestBatteryExemption,
 } from "@/lib/native";
 import { canScanDeviceGallery, scanDeviceGallery } from "@/lib/deviceMedia";
 
@@ -36,7 +37,13 @@ export function PermissionsWizard() {
     setBusy(true);
     try {
       if (isNative()) {
-        await Promise.allSettled([requestNotifPermission()]);
+        // Gallery first (needed for indexing), then notifications (foreground
+        // service), then battery exemption so sync survives a locked screen.
+        await requestGalleryPermission().catch(() => false);
+        await requestNotifPermission().catch(() => false);
+        if (!(await isIgnoringBatteryOptimizations().catch(() => true))) {
+          await requestBatteryExemption().catch(() => false);
+        }
       } else if ("Notification" in window && Notification.permission === "default") {
         try { await Notification.requestPermission(); } catch { /* ignore */ }
       }
@@ -47,6 +54,7 @@ export function PermissionsWizard() {
       }
     } finally { setBusy(false); setOpen(false); }
   };
+
 
   return (
     <div className="fixed inset-0 z-[80] flex flex-col bg-background text-foreground safe-top safe-bottom">

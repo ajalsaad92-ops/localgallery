@@ -26,6 +26,9 @@ interface LocalGalleryMediaPlugin {
   startSyncService(options: { title: string; text: string }): Promise<{ ok: boolean }>;
   updateSyncService(options: { title: string; text: string; progress?: number; max?: number }): Promise<{ ok: boolean }>;
   stopSyncService(): Promise<{ ok: boolean }>;
+  checkBatteryOptimization(): Promise<{ ignoring: boolean }>;
+  requestBatteryOptimizationExemption(): Promise<{ ignoring: boolean; requested?: boolean }>;
+
 }
 
 const LocalGalleryMedia = registerPlugin<LocalGalleryMediaPlugin>("LocalGalleryMedia");
@@ -157,6 +160,22 @@ export async function stopSyncForegroundService(): Promise<void> {
   if (!isNative()) return;
   try { await LocalGalleryMedia.stopSyncService(); } catch { /* noop */ }
 }
+
+// ------- Battery optimization (keep syncing while the screen is off) ---------
+export async function isIgnoringBatteryOptimizations(): Promise<boolean> {
+  if (!isNative()) return true;
+  try { return !!(await LocalGalleryMedia.checkBatteryOptimization()).ignoring; }
+  catch { return false; }
+}
+export async function requestBatteryExemption(): Promise<boolean> {
+  if (!isNative()) return true;
+  logPerm("perm", "battery: request exemption");
+  try {
+    const r = await LocalGalleryMedia.requestBatteryOptimizationExemption();
+    return !!r.ignoring;
+  } catch { return false; }
+}
+
 
 // ------- Local notifications --------------------------------------------------
 export async function requestNotifPermission(): Promise<boolean> {
