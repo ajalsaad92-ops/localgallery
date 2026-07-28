@@ -161,6 +161,22 @@ export async function stopSyncForegroundService(): Promise<void> {
   try { await LocalGalleryMedia.stopSyncService(); } catch { /* noop */ }
 }
 
+// ------- Battery optimization (keep syncing while the screen is off) ---------
+export async function isIgnoringBatteryOptimizations(): Promise<boolean> {
+  if (!isNative()) return true;
+  try { return !!(await LocalGalleryMedia.checkBatteryOptimization()).ignoring; }
+  catch { return false; }
+}
+export async function requestBatteryExemption(): Promise<boolean> {
+  if (!isNative()) return true;
+  logPerm("perm", "battery: request exemption");
+  try {
+    const r = await LocalGalleryMedia.requestBatteryOptimizationExemption();
+    return !!r.ignoring;
+  } catch { return false; }
+}
+
+
 // ------- Local notifications --------------------------------------------------
 export async function requestNotifPermission(): Promise<boolean> {
   logPerm("perm", "notif: request start");
