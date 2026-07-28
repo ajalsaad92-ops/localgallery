@@ -20,8 +20,11 @@ export type DiagCategory =
   | "perf"
   | "native"
   | "net"
+  | "sync"
+  | "tg"
   | "error"
   | "app";
+
 
 export interface DiagEntry {
   ts: number;
