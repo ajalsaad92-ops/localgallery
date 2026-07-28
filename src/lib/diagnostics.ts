@@ -86,13 +86,16 @@ export function logDiag(
   detail?: unknown,
   category: DiagCategory = "app",
 ) {
-  // Only persist warnings and errors — keep info visible in the devtools
-  // console but out of the ring buffer so the panel and phone stay responsive.
-  if (level === "info") {
+  // Info is normally console-only so the phone stays responsive, BUT the
+  // sync + telegram flows are always recorded: they are the two things the
+  // user needs a precise trace of when nothing shows up / nothing uploads.
+  const keepInfo = category === "sync" || category === "tg";
+  if (level === "info" && !keepInfo) {
     // eslint-disable-next-line no-console
     console.log(`[${category}·${scope}]`, message, detail ?? "");
     return;
   }
+
   const entry: DiagEntry = {
     ts: Date.now(),
     level,
