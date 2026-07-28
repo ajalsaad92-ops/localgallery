@@ -238,9 +238,10 @@ export async function runSyncCycle(): Promise<{ processed: number; failed: numbe
   try {
     for (const asset of unsynced) {
       const now = await getSyncSettings();
-      if (now.paused) break;
+      if (now.paused) { logSync("cycle", "paused mid-run — stopping"); break; }
       if (now.maxFileMb > 0 && asset.size > now.maxFileMb * 1024 * 1024) {
         failed++;
+        logSync("skip", `over size limit: ${asset.name}`, { sizeMb: Math.round(asset.size / 1048576), limitMb: now.maxFileMb }, "warn");
         emit({ failed, lastError: `تجاوز الحد: ${asset.name}` });
         continue;
       }
@@ -251,21 +252,32 @@ export async function runSyncCycle(): Promise<{ processed: number; failed: numbe
         done,
         unsynced.length,
       );
+      const t0 = Date.now();
       try {
         if (accountReady) await uploadOneViaAccount(asset, now.freeBlobAfterSync);
         else await uploadOne(asset, cfg!.botToken!, cfg!.chatId!, now.freeBlobAfterSync);
         done++;
+        logSync("item", `uploaded ${asset.kind ?? "file"}: ${asset.name}`, { ms: Date.now() - t0 });
         emit({ done });
 
       } catch (e) {
         failed++;
+        logSync("item", `FAILED ${asset.kind ?? "file"}: ${asset.name}`, {
+          error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+          mime: asset.mime, sizeMb: Math.round(asset.size / 1048576),
+          hasBlob: !!asset.blob, hasLocalUri: !!asset.localUri,
+          via: accountReady ? "mtproto" : "bot",
+          ms: Date.now() - t0,
+        }, "error");
         emit({ failed, lastError: e instanceof Error ? e.message : String(e) });
       }
     }
   } finally {
     emit({ running: false, currentName: undefined });
     void stopSyncForegroundService();
+    logSync("cycle", "finished", { done, failed, total: unsynced.length });
   }
+
 
   if (done > 0 || failed > 0) {
     try {
