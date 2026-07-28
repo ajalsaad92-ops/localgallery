@@ -33,7 +33,10 @@ export interface MediaAsset {
   /** Telegram fileId once uploaded / when discovered in the remote feed. */
   remoteFileId?: string;
   remoteMessageId?: number;
+  /** Channel/group id the message lives in (MTProto user-account mode). */
+  remoteChatId?: string;
   remoteFilePath?: string;
+
   /** Small JPEG thumbnail Telegram serves for HEIC/RAW documents and videos. */
   thumbFileId?: string;
   thumbFilePath?: string;
