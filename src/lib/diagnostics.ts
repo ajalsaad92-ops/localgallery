@@ -344,26 +344,28 @@ export function installGlobalDiagHandlers() {
   // Console mirroring (warn + error only, to avoid recursion floods) --------
   const origWarn = console.warn.bind(console);
   const origErr = console.error.bind(console);
-  console.warn = (...args: unknown[]) => {
-    origWarn(...args);
+  const mirror = (level: "warn" | "error", args: unknown[]) => {
     try {
-      const msg = args.map((a) => (typeof a === "string" ? a : safeStringify(a))).join(" ");
-      if (!msg.includes("[") || !msg.includes("·")) {
-        buffer.push({ ts: Date.now(), level: "warn", scope: "console", message: msg.slice(0, 500), category: "error" });
-        emit(); schedulePersist();
-      }
+      const parts = args.map((a) => describeValue(a)).filter(Boolean);
+      const msg = parts.join(" ").trim();
+      if (!msg) return;
+      // Skip our own logDiag echoes ("[category·scope] ...").
+      if (msg.includes("[") && msg.includes("·")) return;
+      const [head, ...rest] = msg.split("\n");
+      buffer.push({
+        ts: Date.now(),
+        level,
+        scope: "console",
+        message: head.slice(0, 300),
+        detail: rest.length ? rest.join("\n").slice(0, 2000) : undefined,
+        category: "error",
+      });
+      emit(); schedulePersist();
     } catch { /* ignore */ }
   };
-  console.error = (...args: unknown[]) => {
-    origErr(...args);
-    try {
-      const msg = args.map((a) => (typeof a === "string" ? a : safeStringify(a))).join(" ");
-      if (!msg.includes("[") || !msg.includes("·")) {
-        buffer.push({ ts: Date.now(), level: "error", scope: "console", message: msg.slice(0, 500), category: "error" });
-        emit(); schedulePersist();
-      }
-    } catch { /* ignore */ }
-  };
+  console.warn = (...args: unknown[]) => { origWarn(...args); mirror("warn", args); };
+  console.error = (...args: unknown[]) => { origErr(...args); mirror("error", args); };
+
 
   // Touch / click -----------------------------------------------------------
   const describeTarget = (t: EventTarget | null): string => {
