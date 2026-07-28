@@ -143,7 +143,9 @@ async function uploadOneViaAccount(asset: MediaAsset, freeBlob: boolean) {
   const { uploadToTarget } = await import("@/lib/providers/mtproto");
   const blob = await readBlob(asset);
   const file = new File([blob], asset.name, { type: asset.mime || blob.type || "application/octet-stream" });
+  logSync("upload", `account upload start: ${asset.name}`, { bytes: file.size, mime: file.type, kind: asset.kind });
   const res = await uploadToTarget(file);
+  logSync("upload", `account upload ok: ${asset.name}`, res);
   const patch: Partial<MediaAsset> = {
     provider: "telegram-remote",
     syncedAt: Date.now(),
@@ -158,22 +160,35 @@ async function uploadOneViaAccount(asset: MediaAsset, freeBlob: boolean) {
 }
 
 export async function runSyncCycle(): Promise<{ processed: number; failed: number }> {
-  if (progress.running) return { processed: 0, failed: 0 };
+  if (progress.running) { logSync("cycle", "skipped: already running"); return { processed: 0, failed: 0 }; }
 
   const settings = await getSyncSettings();
-  if (settings.paused) return { processed: 0, failed: 0 };
-  if (!isOnline()) return { processed: 0, failed: 0 };
-  if (settings.wifiOnly && !(await isWifiLike())) return { processed: 0, failed: 0 };
+  if (settings.paused) { logSync("cycle", "skipped: sync is paused"); return { processed: 0, failed: 0 }; }
+  if (!isOnline()) { logSync("cycle", "skipped: device offline", undefined, "warn"); return { processed: 0, failed: 0 }; }
+  if (settings.wifiOnly && !(await isWifiLike())) {
+    logSync("cycle", "skipped: wifi-only is on and connection is not wifi", undefined, "warn");
+    return { processed: 0, failed: 0 };
+  }
 
   // Personal account (MTProto) wins when a target channel is selected —
   // no bot token required, and files up to 2 GB are allowed.
   const { getSavedTarget, getClient } = await import("@/lib/providers/mtproto");
   const target = await getSavedTarget();
-  const accountReady = !!target && !!(await getClient());
+  let client: unknown = null;
+  try { client = await getClient(); }
+  catch (e) { logSync("cycle", "MTProto client failed to connect", e, "error"); }
+  const accountReady = !!target && !!client;
 
   const cfg = await photoDb.providers.get("telegram");
   const botReady = !!cfg?.configured && !!cfg?.botToken && !!cfg?.chatId;
-  if (!accountReady && !botReady) return { processed: 0, failed: 0 };
+  logSync("cycle", "start", {
+    mode: settings.mode, wifiOnly: settings.wifiOnly, freeBlob: settings.freeBlobAfterSync,
+    accountReady, target: target?.title ?? null, botReady,
+  });
+  if (!accountReady && !botReady) {
+    logSync("cycle", "skipped: no upload target (link the account + pick a channel, or configure the bot)", undefined, "warn");
+    return { processed: 0, failed: 0 };
+  }
 
 
   const allAssets = await photoDb.assets.toArray();
@@ -184,20 +199,36 @@ export async function runSyncCycle(): Promise<{ processed: number; failed: numbe
     allAssets.filter((a) => a.syncedAt != null || a.remoteFileId).map(sig),
   );
 
-  const candidates = allAssets.filter(
-    (a) => a.provider === "device" && a.syncedAt == null && (a.blob || a.localUri),
+  const deviceAssets = allAssets.filter((a) => a.provider === "device");
+  const candidates = deviceAssets.filter(
+    (a) => a.syncedAt == null && (a.blob || a.localUri),
   );
+  const noSource = deviceAssets.filter((a) => a.syncedAt == null && !a.blob && !a.localUri);
+  logSync("scan", "queue built", {
+    totalAssets: allAssets.length,
+    deviceAssets: deviceAssets.length,
+    videos: deviceAssets.filter((a) => a.kind === "video").length,
+    candidates: candidates.length,
+    candidateVideos: candidates.filter((a) => a.kind === "video").length,
+    skippedNoLocalSource: noSource.length,
+  });
+  if (noSource.length) {
+    logSync("scan", `${noSource.length} assets have no blob/localUri — cannot upload`,
+      noSource.slice(0, 10).map((a) => `${a.kind}:${a.name}`), "warn");
+  }
   const unsynced: MediaAsset[] = [];
   for (const a of candidates) {
     if (uploaded.has(sig(a))) {
       // Already on Telegram under another local id — just retire the duplicate.
       await photoDb.assets.update(a.id, { syncedAt: Date.now(), blob: undefined });
+      logSync("dedupe", `already on Telegram, marked synced: ${a.name}`);
       continue;
     }
     uploaded.add(sig(a));
     unsynced.push(a);
   }
-  if (unsynced.length === 0) return { processed: 0, failed: 0 };
+  if (unsynced.length === 0) { logSync("cycle", "nothing to upload"); return { processed: 0, failed: 0 }; }
+
 
 
   emit({ running: true, total: unsynced.length, done: 0, failed: 0, currentName: undefined, lastError: undefined });
