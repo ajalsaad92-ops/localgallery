@@ -127,6 +127,11 @@ export const logPerf     = (scope: string, msg: string, d?: unknown) => logDiag(
 export const logNative   = (scope: string, msg: string, d?: unknown) => logDiag("info", scope, msg, d, "native");
 export const logNet      = (scope: string, msg: string, d?: unknown, lvl: DiagLevel = "info") => logDiag(lvl, scope, msg, d, "net");
 export const logError    = (scope: string, msg: string, d?: unknown) => logDiag("error", scope, msg, d, "error");
+/** Sync-engine trace — always kept, even at info level. */
+export const logSync     = (scope: string, msg: string, d?: unknown, lvl: DiagLevel = "info") => logDiag(lvl, scope, msg, d, "sync");
+/** Telegram (bot + personal account) trace — always kept, even at info level. */
+export const logTg       = (scope: string, msg: string, d?: unknown, lvl: DiagLevel = "info") => logDiag(lvl, scope, msg, d, "tg");
+
 
 // Small helper for timed operations. Usage: const t = mark(); ...; logPerf("ocr","done",{ms:t()})
 export function mark(): () => number {
