@@ -123,6 +123,9 @@ export default defineConfig(({ mode }) => ({
       // gramjs reads `inspect.custom` from Node's util module at import time.
       util: path.resolve(__dirname, "./src/lib/shims/util.ts"),
       "node:util": path.resolve(__dirname, "./src/lib/shims/util.ts"),
+      // gramjs calls crypto.randomBytes/createHash — map to its WebCrypto impl.
+      crypto: path.resolve(__dirname, "./src/lib/shims/node-crypto.ts"),
+      "node:crypto": path.resolve(__dirname, "./src/lib/shims/node-crypto.ts"),
       // Node-only transports gramjs never uses in the browser.
       socks: path.resolve(__dirname, "./src/lib/shims/node-net.ts"),
       net: path.resolve(__dirname, "./src/lib/shims/node-net.ts"),
@@ -133,7 +136,7 @@ export default defineConfig(({ mode }) => ({
   },
   optimizeDeps: {
     // gramjs ships CommonJS; pre-bundle it so dynamic imports work in the browser.
-    include: ["telegram", "telegram/sessions", "telegram/Password", "buffer"],
+    include: ["telegram", "telegram/sessions", "telegram/Password", "telegram/crypto/crypto", "buffer"],
     esbuildOptions: {
       define: { global: "globalThis" },
     },
