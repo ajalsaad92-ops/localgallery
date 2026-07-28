@@ -109,9 +109,10 @@ export function logDiag(
   buffer.push(entry);
   if (buffer.length > BUFFER_MAX) buffer.splice(0, buffer.length - BUFFER_MAX);
   // eslint-disable-next-line no-console
-  console[level === "error" ? "error" : "warn"](
+  console[level === "error" ? "error" : level === "warn" ? "warn" : "log"](
     `[${category}·${scope}]`, message, detail ?? "",
   );
+
   emit();
   schedulePersist();
 }
