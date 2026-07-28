@@ -66,14 +66,10 @@ export function useSyncLoop() {
       try {
         const { Capacitor } = await import("@capacitor/core");
         if (!Capacitor.isNativePlatform()) return;
-        const { registerPlugin } = await import("@capacitor/core");
-        const plugin = registerPlugin<{
-          addListener(
-            event: "syncCommand",
-            cb: (data: { action: "pause" | "resume" | "stop" }) => void,
-          ): Promise<{ remove: () => Promise<void> }>;
-        }>("LocalGalleryMedia");
-        const handle = await plugin.addListener("syncCommand", async ({ action }) => {
+        // Reuse the single registration from native.ts — registering the same
+        // plugin name twice makes Capacitor warn and ignore this instance.
+        const { LocalGalleryMedia } = await import("@/lib/native");
+        const handle = await LocalGalleryMedia.addListener("syncCommand", async ({ action }) => {
           const { setSyncSettings, runSyncCycle } = await import("@/lib/syncEngine");
           if (action === "pause") await setSyncSettings({ paused: true });
           else if (action === "resume") { await setSyncSettings({ paused: false }); void runSyncCycle(); }
@@ -85,4 +81,5 @@ export function useSyncLoop() {
     return () => { cleanup?.(); };
   }, []);
 }
+
 
