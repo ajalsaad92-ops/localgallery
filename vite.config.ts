@@ -136,7 +136,7 @@ export default defineConfig(({ mode }) => ({
   },
   optimizeDeps: {
     // gramjs ships CommonJS; pre-bundle it so dynamic imports work in the browser.
-    include: ["telegram", "telegram/sessions", "telegram/Password", "buffer"],
+    include: ["telegram", "telegram/sessions", "telegram/Password", "telegram/crypto/crypto", "buffer"],
     esbuildOptions: {
       define: { global: "globalThis" },
     },
