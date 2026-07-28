@@ -153,10 +153,9 @@ export function logDiag(
     scope,
     message,
     category,
-    detail: detail == null ? undefined : detail instanceof Error
-      ? `${detail.name}: ${detail.message}\n${detail.stack ?? ""}`
-      : typeof detail === "string" ? detail : safeStringify(detail),
+    detail: detail == null ? undefined : describeValue(detail),
   };
+
   buffer.push(entry);
   if (buffer.length > BUFFER_MAX) buffer.splice(0, buffer.length - BUFFER_MAX);
   // eslint-disable-next-line no-console
