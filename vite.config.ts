@@ -120,6 +120,14 @@ export default defineConfig(({ mode }) => ({
     alias: {
       "@": path.resolve(__dirname, "./src"),
       buffer: "buffer",
+      // gramjs reads `inspect.custom` from Node's util module at import time.
+      util: path.resolve(__dirname, "./src/lib/shims/util.ts"),
+      "node:util": path.resolve(__dirname, "./src/lib/shims/util.ts"),
+    },
+  },
+  optimizeDeps: {
+    esbuildOptions: {
+      define: { global: "globalThis" },
     },
   },
 
