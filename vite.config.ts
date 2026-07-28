@@ -120,6 +120,22 @@ export default defineConfig(({ mode }) => ({
     alias: {
       "@": path.resolve(__dirname, "./src"),
       buffer: "buffer",
+      // gramjs reads `inspect.custom` from Node's util module at import time.
+      util: path.resolve(__dirname, "./src/lib/shims/util.ts"),
+      "node:util": path.resolve(__dirname, "./src/lib/shims/util.ts"),
+      // Node-only transports gramjs never uses in the browser.
+      socks: path.resolve(__dirname, "./src/lib/shims/node-net.ts"),
+      net: path.resolve(__dirname, "./src/lib/shims/node-net.ts"),
+      tls: path.resolve(__dirname, "./src/lib/shims/node-net.ts"),
+      os: path.resolve(__dirname, "./src/lib/shims/node-os.ts"),
+      "node:os": path.resolve(__dirname, "./src/lib/shims/node-os.ts"),
+    },
+  },
+  optimizeDeps: {
+    // gramjs ships CommonJS; pre-bundle it so dynamic imports work in the browser.
+    include: ["telegram", "telegram/sessions", "telegram/Password", "buffer"],
+    esbuildOptions: {
+      define: { global: "globalThis" },
     },
   },
 
