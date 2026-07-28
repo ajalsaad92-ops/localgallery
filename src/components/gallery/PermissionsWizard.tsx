@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import {
   isNative, prefGet, prefSet,
   requestNotifPermission, checkNotifPermission, checkGalleryPermission,
+  requestGalleryPermission, isIgnoringBatteryOptimizations, requestBatteryExemption,
 } from "@/lib/native";
 import { canScanDeviceGallery, scanDeviceGallery } from "@/lib/deviceMedia";
 
