@@ -79,20 +79,49 @@ async function isWifiLike(): Promise<boolean> {
 
 
 async function readBlob(asset: MediaAsset): Promise<Blob> {
-  let blob = asset.blob;
-  if (!blob && asset.localUri) {
-    const response = await fetch(asset.localUri);
-    if (!response.ok) throw new Error(`تعذر قراءة الملف المحلي: ${response.status}`);
-    blob = await response.blob();
+  if (asset.blob) {
+    logSync("read", `blob from IndexedDB: ${asset.name}`, { bytes: asset.blob.size });
+    return asset.blob;
   }
-  if (!blob) throw new Error("لا يوجد ملف محلي للرفع");
-  return blob;
+  if (asset.localUri) {
+    // Videos (and big files) come from MediaStore content:// URIs proxied by
+    // the WebView. fetch() can fail there, so fall back to XHR which handles
+    // the capacitor scheme + large streams better.
+    try {
+      const response = await fetch(asset.localUri);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const b = await response.blob();
+      logSync("read", `local uri read via fetch: ${asset.name}`, { bytes: b.size, mime: b.type });
+      if (b.size > 0) return b;
+      logSync("read", `fetch returned 0 bytes, trying XHR: ${asset.name}`, undefined, "warn");
+    } catch (e) {
+      logSync("read", `fetch failed for ${asset.name}, trying XHR`, e, "warn");
+    }
+    const b = await new Promise<Blob | null>((resolve) => {
+      try {
+        const xhr = new XMLHttpRequest();
+        xhr.open("GET", asset.localUri!);
+        xhr.responseType = "blob";
+        xhr.onload = () => resolve(xhr.status < 400 ? (xhr.response as Blob) : null);
+        xhr.onerror = () => resolve(null);
+        xhr.send();
+      } catch { resolve(null); }
+    });
+    if (b && b.size > 0) {
+      logSync("read", `local uri read via XHR: ${asset.name}`, { bytes: b.size });
+      return b;
+    }
+    throw new Error(`تعذر قراءة الملف المحلي (${asset.kind ?? "?"}): ${asset.name}`);
+  }
+  throw new Error(`لا يوجد ملف محلي للرفع: ${asset.name}`);
 }
 
 async function uploadOne(asset: MediaAsset, botToken: string, chatId: string, freeBlob: boolean) {
   const blob = await readBlob(asset);
   const file = new File([blob], asset.name, { type: asset.mime || blob.type || "application/octet-stream" });
+  logSync("upload", `bot upload start: ${asset.name}`, { bytes: file.size, mime: file.type, kind: asset.kind });
   const res = await telegramSendDocument(botToken, chatId, file);
+  logSync("upload", `bot upload ok: ${asset.name}`, { messageId: res.messageId });
   const patch: Partial<MediaAsset> = {
     provider: "telegram-remote",
     syncedAt: Date.now(),
@@ -105,6 +134,7 @@ async function uploadOne(asset: MediaAsset, botToken: string, chatId: string, fr
   }
   await photoDb.assets.update(asset.id, patch);
 }
+
 
 /** Upload through the linked personal account (no bot involved). */
 async function uploadOneViaAccount(asset: MediaAsset, freeBlob: boolean) {
