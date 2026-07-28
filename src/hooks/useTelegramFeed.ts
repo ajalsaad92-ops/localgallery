@@ -180,15 +180,13 @@ export function useTelegramFeed(enabled: boolean, intervalMs = 15000, trigger: n
  * Import the full media history of the selected channel through the linked
  * personal account (MTProto). Unlike the bot feed this reaches old messages.
  */
-export async function importChannelHistory(limit = 300): Promise<number> {
+export async function importChannelHistory(limit = 1000): Promise<number> {
   const { fetchChannelMedia } = await import("@/lib/providers/mtproto");
   let added = 0;
   let updated = 0;
-  let withThumb = 0;
   const n = await fetchChannelMedia(limit, async (item) => {
     const id = `tgm-${item.chatId}-${item.messageId}`;
     const existing = await photoDb.assets.get(id);
-    if (item.thumbDataUrl) withThumb++;
     const base: Partial<MediaAsset> = {
       provider: "telegram-remote",
       remoteMessageId: item.messageId,
@@ -201,14 +199,52 @@ export async function importChannelHistory(limit = 300): Promise<number> {
       height: item.height,
       duration: item.duration,
       date: item.date || Date.now(),
-      posterDataUrl: item.thumbDataUrl,
     };
+    // Never wipe a poster we already downloaded.
+    if (item.thumbDataUrl) base.posterDataUrl = item.thumbDataUrl;
     if (existing) { await photoDb.assets.update(id, base); updated++; }
     else { await photoDb.assets.put({ id, createdAt: Date.now(), ...base } as MediaAsset); added++; }
   });
-  logTg("import", "channel history stored", { scanned: n, added, updated, withThumb });
+  logTg("import", "channel history stored", { scanned: n, added, updated });
   return n;
 }
+
+/**
+ * Download the small Telegram-side preview for every remote asset that has
+ * none yet. Runs with a small concurrency so the grid fills in progressively
+ * instead of blocking the import.
+ */
+let hydrating = false;
+export async function hydrateThumbnails(
+  onProgress?: (done: number, total: number) => void,
+): Promise<void> {
+  if (hydrating) return;
+  hydrating = true;
+  try {
+    const { fetchMessageThumb } = await import("@/lib/providers/mtproto");
+    const pending = (await photoDb.assets.toArray()).filter(
+      (a) => a.provider === "telegram-remote" && !a.posterDataUrl && !a.remoteFileId && a.remoteMessageId,
+    );
+    logTg("import", `hydrating ${pending.length} thumbnails`);
+    let done = 0;
+    const workers = Array.from({ length: 4 }, async () => {
+      for (;;) {
+        const a = pending.shift();
+        if (!a) return;
+        try {
+          const url = await fetchMessageThumb(a.remoteMessageId!);
+          if (url) await photoDb.assets.update(a.id, { posterDataUrl: url });
+        } catch { /* keep going */ }
+        onProgress?.(++done, pending.length + done);
+      }
+    });
+    await Promise.all(workers);
+    logTg("import", `thumbnails hydrated`, { done });
+  } finally {
+    hydrating = false;
+  }
+}
+
 
 
 /** Resolve a full-size URL for a remote asset (getFile → file/bot). */
