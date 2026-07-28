@@ -7,8 +7,10 @@ import {
   useTelegramFeed,
   useRemoteAssetUrls,
   importChannelHistory,
+  hydrateThumbnails,
   resolveRemoteUrl,
 } from "@/hooks/useTelegramFeed";
+
 import { getSavedTarget, getClient, type MtTarget } from "@/lib/providers/mtproto";
 import { photoDb } from "@/lib/photoDb";
 import { PhotoGrid } from "./PhotoGrid";
@@ -44,6 +46,10 @@ export function TelegramScreen() {
   const { density } = useGridDensity();
   const [lightbox, setLightbox] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const [autoRan, setAutoRan] = useState(false);
+  const [thumbing, setThumbing] = useState(false);
+  const [thumbProgress, setThumbProgress] = useState({ done: 0, total: 0 });
+
 
   const photos = useMemo<MockPhoto[]>(() => assets.map((a) => {
     const full = urls.full.get(a.id) ?? extraFull.get(a.id);
@@ -72,19 +78,36 @@ export function TelegramScreen() {
     return () => clearTimeout(t);
   }, [busy]);
 
-  const refresh = async () => {
+  const runImport = async (announce: boolean) => {
     setBusy(true);
-    setPollTick((t) => t + 1);
-    if (accountReady) {
-      try {
-        const n = await importChannelHistory(300);
-        toast.success(`تمت قراءة ${n} عنصراً من ${target?.title ?? "القناة"}`);
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : String(e));
-      }
+    try {
+      const n = await importChannelHistory(1500);
+      if (announce) toast.success(`تمت قراءة ${n} عنصراً من ${target?.title ?? "القناة"}`);
+      setBusy(false);
+      // Previews stream in after the metadata so the grid is never empty.
+      setThumbing(true);
+      await hydrateThumbnails((done, total) => setThumbProgress({ done, total }));
+      setThumbing(false);
+    } catch (e) {
+      setBusy(false);
+      setThumbing(false);
+      if (announce) toast.error(e instanceof Error ? e.message : String(e));
     }
-    setBusy(false);
   };
+
+  // Auto-read the channel as soon as the account + target are ready.
+  useEffect(() => {
+    if (!accountReady || autoRan) return;
+    setAutoRan(true);
+    void runImport(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountReady, autoRan]);
+
+  const refresh = async () => {
+    setPollTick((t) => t + 1);
+    if (accountReady) await runImport(true);
+  };
+
 
   /** MTProto items stream on demand — fetch the full file when opening it. */
   const openAt = async (i: number) => {
@@ -153,8 +176,14 @@ export function TelegramScreen() {
 
       {accountReady && (
         <div className="mx-4 mb-3 rounded-2xl border border-border bg-card px-4 py-3 text-xs font-semibold">
-          القناة الحالية: <span className="text-primary">{target?.title}</span> · اضغط «تحديث» لقراءة كل المحفوظات.
+          القناة الحالية: <span className="text-primary">{target?.title}</span>
+          {thumbing
+            ? ` · جارٍ تحميل المعاينات ${thumbProgress.done}/${thumbProgress.total}`
+            : busy
+              ? " · جارٍ قراءة المحفوظات…"
+              : " · اضغط «تحديث» لإعادة القراءة."}
         </div>
+
       )}
 
       {botReady && !accountReady && assets.length === 0 && (
