@@ -373,9 +373,41 @@ export async function fetchChannelMedia(
     catch (e) { logTg("feed", `store failed for msg ${m.id}`, e, "error"); }
   }
 
-  logTg("feed", "history read complete", { imported: count, skippedNoMedia, skippedMime, thumbFails });
+  logTg("feed", "history read complete", { imported: count, skippedNoMedia, skippedMime });
   return count;
 }
+
+/**
+ * Fetch a small preview for one message. Tries the cheap cached thumbnails
+ * first and only falls back to the smallest real photo size.
+ */
+export async function fetchMessageThumb(messageId: number): Promise<string | null> {
+  const client = await getClient();
+  if (!client) return null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const c = client as any;
+  let m = msgCache.get(messageId);
+  if (!m) {
+    const target = await getSavedTarget();
+    if (!target) return null;
+    const entity = await resolveEntity(c, target);
+    const [fetched] = await c.getMessages(entity, { ids: [messageId] });
+    if (!fetched) return null;
+    m = fetched;
+    msgCache.set(messageId, m);
+  }
+  // thumb index 0 = smallest cached JPEG (documents AND photos support it).
+  for (const thumb of [0, 1, -1]) {
+    try {
+      const buf = await c.downloadMedia(m, { thumb });
+      if (buf && buf.length) return toDataUrl(new Uint8Array(buf));
+    } catch { /* next size */ }
+  }
+  logTg("feed", `no thumbnail for msg ${messageId}`, undefined, "warn");
+  return null;
+}
+
+
 
 
 /** Download the full bytes of a stored message (for the lightbox / save). */
