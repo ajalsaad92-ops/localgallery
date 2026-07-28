@@ -270,17 +270,40 @@ export async function nativeShareText(title: string, text: string, url?: string)
 }
 
 // ------- Save file to device (Downloads-like) --------------------------------
+function toBase64(bytes: Uint8Array): string {
+  // Chunked — String.fromCharCode(...bigArray) blows the call stack.
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+
 export async function saveBlobToDevice(name: string, blob: Blob): Promise<string | null> {
   if (!isNative()) return null;
   const buf = await blob.arrayBuffer();
-  const base64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
-  const res = await Filesystem.writeFile({
-    path: name,
-    data: base64,
-    directory: Directory.Documents,
-    recursive: true,
-  });
-  return res.uri;
+  const base64 = toBase64(new Uint8Array(buf));
+  // Documents is not always writable on Android 13+ — fall back to the app's
+  // external directory, then to internal storage.
+  const dirs = [Directory.Documents, Directory.External, Directory.Data];
+  let lastErr: unknown = null;
+  for (const directory of dirs) {
+    try {
+      const res = await Filesystem.writeFile({ path: name, data: base64, directory, recursive: true });
+      return res.uri;
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("تعذّر حفظ الملف");
+}
+
+/** Save text and open the native share sheet with the actual file attached. */
+export async function shareTextAsFile(name: string, text: string): Promise<boolean> {
+  if (!isNative()) return false;
+  const uri = await saveBlobToDevice(name, new Blob([text], { type: "text/plain;charset=utf-8" }));
+  if (!uri) return false;
+  await Share.share({ title: name, url: uri });
+  return true;
 }
 
 /**

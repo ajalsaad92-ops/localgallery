@@ -196,6 +196,7 @@ export async function listTargets(): Promise<MtTarget[]> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const dialogs = await (client as any).getDialogs({ limit: 200 });
   const out: MtTarget[] = [];
+  const seen = new Set<string>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const d of dialogs as any[]) {
     const e = d.entity;
@@ -204,9 +205,12 @@ export async function listTargets(): Promise<MtTarget[]> {
     const isMe = d.isUser && e.self;
     if (!isChannel && !isMe) continue;
     if (isChannel && e.broadcast && e.adminRights == null && !e.creator) continue;
+    const id = String(e.id);
+    if (seen.has(id)) continue; // a chat can surface twice (folders/archive)
+    seen.add(id);
     out.push({
-      id: String(e.id),
-      title: isMe ? "الرسائل المحفوظة" : (d.title || e.title || e.username || String(e.id)),
+      id,
+      title: isMe ? "الرسائل المحفوظة" : (d.title || e.title || e.username || id),
       username: e.username ?? undefined,
     });
   }
@@ -244,8 +248,13 @@ export async function uploadToTarget(
   const big = file.size > 10 * 1024 * 1024;
   logTg("upload", `sendFile → ${target.title}`, { name: file.name, mime: file.type, bytes: file.size });
   try {
+    // gramjs in the browser rejects plain File objects ("Cannot use [object
+    // File] as file") — wrap the bytes in a CustomFile instead.
+    const { CustomFile } = await import("telegram/client/uploads");
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const custom = new CustomFile(file.name, bytes.length, file.name, bytes as unknown as Buffer);
     const msg = await c.sendFile(entity, {
-      file,
+      file: custom,
       forceDocument: true,
       // More workers keep large videos from stalling on a single connection.
       workers: big ? 4 : 1,
@@ -293,21 +302,41 @@ export async function fetchChannelMedia(
   const c = client as any;
   logTg("feed", `reading history of "${target.title}"`, { id: target.id, limit });
   const entity = await resolveEntity(c, target);
-  const messages = await c.getMessages(entity, { limit });
+  // Page manually: a single getMessages call caps out and silently returns few
+  // rows on big channels.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const messages: any[] = [];
+  let offsetId = 0;
+  while (messages.length < limit) {
+    const page = await c.getMessages(entity, { limit: Math.min(100, limit - messages.length), offsetId });
+    if (!page || page.length === 0) break;
+    messages.push(...page);
+    offsetId = Number(page[page.length - 1].id);
+    if (page.length < 2) break;
+  }
   logTg("feed", `got ${messages.length} messages`);
+  if (messages.length === 0) {
+    logTg("feed", "channel returned no messages — check the selected channel", { id: target.id }, "warn");
+  }
   let count = 0;
   let skippedNoMedia = 0;
   let skippedMime = 0;
   let thumbFails = 0;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const m of messages as any[]) {
-    const doc = m.document;
-    const photo = m.photo;
+    // gramjs exposes .document/.photo getters, but forwarded/album items are
+    // sometimes only reachable through .media.
+    const doc = m.document ?? m.media?.document ?? null;
+    const photo = m.photo ?? m.media?.photo ?? null;
     if (!doc && !photo) { skippedNoMedia++; continue; }
     const mime: string = doc?.mimeType ?? "image/jpeg";
     const isVideo = mime.startsWith("video/");
     const isImage = mime.startsWith("image/") || (!doc && !!photo);
-    if (!isVideo && !isImage) { skippedMime++; continue; }
+    // Documents sent as generic files (application/octet-stream) still count
+    // when the filename looks like media.
+    const nameGuess: string = (doc?.attributes ?? []).find((a: { fileName?: string }) => a.fileName)?.fileName ?? "";
+    const looksMedia = /\.(jpe?g|png|webp|gif|heic|heif|mp4|mov|mkv|webm|avi)$/i.test(nameGuess);
+    if (!isVideo && !isImage && !looksMedia) { skippedMime++; continue; }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const attrs: any[] = doc?.attributes ?? [];
@@ -332,21 +361,22 @@ export async function fetchChannelMedia(
     }
     if (!thumbDataUrl) thumbFails++;
 
+    const isVideoFinal = isVideo || /\.(mp4|mov|mkv|webm|avi)$/i.test(nameGuess);
     const item: MtMediaItem = {
       messageId: Number(m.id),
       chatId: target.id,
       date: Number(m.date ?? 0) * 1000,
-      name: nameAttr?.fileName ?? `tg-${m.id}${isVideo ? ".mp4" : ".jpg"}`,
+      name: nameAttr?.fileName ?? `tg-${m.id}${isVideoFinal ? ".mp4" : ".jpg"}`,
       size: Number(doc?.size ?? 0),
       mime,
-      kind: isVideo ? "video" : "image",
+      kind: isVideoFinal ? "video" : "image",
       width: videoAttr?.w ?? imgAttr?.w,
       height: videoAttr?.h ?? imgAttr?.h,
       duration: videoAttr?.duration,
       thumbDataUrl,
     };
-    await onItem?.(item);
-    count++;
+    try { await onItem?.(item); count++; }
+    catch (e) { logTg("feed", `store failed for msg ${m.id}`, e, "error"); }
   }
   logTg("feed", "history read complete", { imported: count, skippedNoMedia, skippedMime, thumbFails });
   return count;
