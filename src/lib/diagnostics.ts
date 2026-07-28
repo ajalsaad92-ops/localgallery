@@ -266,6 +266,9 @@ export function buildDiagnosticsReport(): string {
     + section("7. Performance Log", renderEntries(byCat("perf")))
     + section("8. Native Behavior Log", renderEntries(byCat("native")))
     + section("9. Network Log", renderEntries(byCat("net")))
+    + section("9a. Sync Engine Trace", renderEntries(byCat("sync")))
+    + section("9b. Telegram Trace", renderEntries(byCat("tg")))
+
     + section("10. Error Log", renderEntries(byCat("error").concat(buffer.filter((e) => e.level === "error" && e.category !== "error"))))
     + section("Appendix: Full Chronological Log", renderEntries(buffer));
 }
