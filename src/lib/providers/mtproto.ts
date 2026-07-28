@@ -361,21 +361,22 @@ export async function fetchChannelMedia(
     }
     if (!thumbDataUrl) thumbFails++;
 
+    const isVideoFinal = isVideo || /\.(mp4|mov|mkv|webm|avi)$/i.test(nameGuess);
     const item: MtMediaItem = {
       messageId: Number(m.id),
       chatId: target.id,
       date: Number(m.date ?? 0) * 1000,
-      name: nameAttr?.fileName ?? `tg-${m.id}${isVideo ? ".mp4" : ".jpg"}`,
+      name: nameAttr?.fileName ?? `tg-${m.id}${isVideoFinal ? ".mp4" : ".jpg"}`,
       size: Number(doc?.size ?? 0),
       mime,
-      kind: isVideo ? "video" : "image",
+      kind: isVideoFinal ? "video" : "image",
       width: videoAttr?.w ?? imgAttr?.w,
       height: videoAttr?.h ?? imgAttr?.h,
       duration: videoAttr?.duration,
       thumbDataUrl,
     };
-    await onItem?.(item);
-    count++;
+    try { await onItem?.(item); count++; }
+    catch (e) { logTg("feed", `store failed for msg ${m.id}`, e, "error"); }
   }
   logTg("feed", "history read complete", { imported: count, skippedNoMedia, skippedMime, thumbFails });
   return count;
