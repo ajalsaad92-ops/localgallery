@@ -16,23 +16,28 @@ import { nativeShareText, saveBlobToDevice, isNative } from "@/lib/native";
  * Warnings + errors only. Info logs stream to devtools console but are not
  * stored so the phone stays responsive.
  */
-const LEVELS: { key: DiagLevel | "all"; label: string }[] = [
+type FilterKey = DiagLevel | "all" | "flow";
+
+const LEVELS: { key: FilterKey; label: string }[] = [
   { key: "all", label: "الكل" },
   { key: "error", label: "أخطاء" },
   { key: "warn", label: "تحذيرات" },
+  { key: "flow", label: "المزامنة/تليكرام" },
 ];
 
 export function DiagnosticsPanel() {
   const [entries, setEntries] = useState<DiagEntry[]>([]);
   const [expanded, setExpanded] = useState<number | null>(null);
-  const [filter, setFilter] = useState<DiagLevel | "all">("all");
+  const [filter, setFilter] = useState<FilterKey>("all");
 
   useEffect(() => subscribeDiagnostics(setEntries), []);
 
-  const filtered = useMemo(
-    () => (filter === "all" ? entries : entries.filter((e) => e.level === filter)),
-    [entries, filter],
-  );
+  const filtered = useMemo(() => {
+    if (filter === "all") return entries;
+    if (filter === "flow") return entries.filter((e) => e.category === "sync" || e.category === "tg");
+    return entries.filter((e) => e.level === filter);
+  }, [entries, filter]);
+
 
   const copyReport = async () => {
     const report = buildDiagnosticsReport();
