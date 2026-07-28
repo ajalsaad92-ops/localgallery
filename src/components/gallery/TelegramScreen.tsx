@@ -81,7 +81,7 @@ export function TelegramScreen() {
   const runImport = async (announce: boolean) => {
     setBusy(true);
     try {
-      const n = await importChannelHistory(1500);
+      const n = await importChannelHistory(0);
       if (announce) toast.success(`تمت قراءة ${n} عنصراً من ${target?.title ?? "القناة"}`);
       setBusy(false);
       // Previews stream in after the metadata so the grid is never empty.
