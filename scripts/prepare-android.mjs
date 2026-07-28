@@ -690,6 +690,23 @@ public class MainActivity extends BridgeActivity {
 }
 `);
 
+// ---- Version stamping (so Android accepts an in-place update) --------------
+// Android refuses to install an APK whose versionCode is lower than the
+// installed one, and package managers can skip an identical build. Derive a
+// monotonic versionCode from the CI run number (or the timestamp locally).
+const gradlePath = resolve("android/app/build.gradle");
+if (existsSync(gradlePath)) {
+  const pkgVersion = JSON.parse(readFileSync(resolve("package.json"), "utf8")).version || "1.0.0";
+  const runNumber = Number(process.env.GITHUB_RUN_NUMBER || 0);
+  const versionCode = runNumber > 0 ? runNumber + 1000 : Math.floor(Date.now() / 60000) % 2000000000;
+  let gradle = readFileSync(gradlePath, "utf8");
+  gradle = gradle
+    .replace(/versionCode\s+\d+/, `versionCode ${versionCode}`)
+    .replace(/versionName\s+"[^"]*"/, `versionName "${pkgVersion}"`);
+  writeFileSync(gradlePath, gradle);
+  console.log(`\n🔢 versionCode=${versionCode} versionName=${pkgVersion}`);
+}
+
 console.log(
   added
     ? `\n✅ Patched AndroidManifest.xml — added ${added} item(s).`
