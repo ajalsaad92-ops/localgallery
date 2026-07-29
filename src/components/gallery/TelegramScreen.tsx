@@ -113,13 +113,22 @@ export function TelegramScreen() {
   const openAt = async (i: number) => {
     const a = assets[i];
     if (a && !a.remoteFileId && a.remoteMessageId && !extraFull.has(a.id)) {
+      // Videos can be hundreds of MB — show progress instead of a frozen tap.
+      const toastId = a.kind === "video" ? toast.loading("جارٍ تحميل الفيديو…") : undefined;
       try {
-        const url = await resolveRemoteUrl(a);
+        const url = await resolveRemoteUrl(a, (received, total) => {
+          if (!toastId || !total) return;
+          toast.loading(`جارٍ تحميل الفيديو… ${Math.round((received / total) * 100)}%`, { id: toastId });
+        });
         if (url) setExtraFull((m) => new Map(m).set(a.id, url));
-      } catch { /* keep the thumbnail */ }
+        if (toastId) toast.dismiss(toastId);
+      } catch {
+        if (toastId) toast.error("تعذّر تحميل الملف", { id: toastId });
+      }
     }
     runViewTransition(() => setLightbox(i));
   };
+
 
   const resync = async () => {
     setBusy(true);
