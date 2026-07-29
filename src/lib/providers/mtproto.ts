@@ -352,11 +352,20 @@ export async function fetchChannelMedia(
 
     const isVideoFinal = isVideo || /\.(mp4|mov|mkv|webm|avi)$/i.test(nameGuess);
     msgCache.set(Number(m.id), m);
+    const fileName: string = nameAttr?.fileName ?? `tg-${m.id}${isVideoFinal ? ".mp4" : ".jpg"}`;
+    const caption: string = m.message ?? m.caption ?? "";
     const item: MtMediaItem = {
       messageId: Number(m.id),
       chatId: target.id,
-      date: Number(m.date ?? 0) * 1000,
-      name: nameAttr?.fileName ?? `tg-${m.id}${isVideoFinal ? ".mp4" : ".jpg"}`,
+      // Telegram's message date is the *upload* time. Prefer the original
+      // capture time embedded in the caption, then the camera filename.
+      date: resolveOriginalDate({
+        caption,
+        name: fileName,
+        messageDateMs: Number(m.date ?? 0) * 1000,
+      }),
+      uploadedAt: Number(m.date ?? 0) * 1000,
+      name: fileName,
       size: Number(doc?.size ?? 0),
       mime,
       kind: isVideoFinal ? "video" : "image",
@@ -364,6 +373,7 @@ export async function fetchChannelMedia(
       height: videoAttr?.h ?? imgAttr?.h ?? biggest?.h,
       duration: videoAttr?.duration,
     };
+
     try { await onItem?.(item); count++; }
     catch (e) { logTg("feed", `store failed for msg ${m.id}`, e, "error"); }
   };
