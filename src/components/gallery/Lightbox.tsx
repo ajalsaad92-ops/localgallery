@@ -107,10 +107,22 @@ export function Lightbox({ photos, index, onClose, onIndexChange, showDownload }
     }
   };
 
-  if (!photo) return null;
+  const isVideo = photo?.kind === "video";
+  const isHeicItem = isHeic(photo?.mime, photo?.name);
 
-  const isVideo = photo.kind === "video";
-  const isHeic = /image\/(heic|heif)/i.test(photo.mime ?? "");
+  // HEIC never renders in a WebView <img>. Decode it locally to JPEG.
+  useEffect(() => {
+    setHeicUrl(null);
+    if (!isHeicItem || !photo?.fullSrc) return;
+    let alive = true;
+    setDecoding(true);
+    void heicUrlToJpegUrl(photo.fullSrc, photo.id)
+      .then((u) => { if (alive) setHeicUrl(u); })
+      .finally(() => { if (alive) setDecoding(false); });
+    return () => { alive = false; };
+  }, [photo?.id, photo?.fullSrc, isHeicItem]);
+
+  if (!photo) return null;
 
   const openExternally = async () => {
     if (!photo.fullSrc) return;
@@ -125,6 +137,7 @@ export function Lightbox({ photos, index, onClose, onIndexChange, showDownload }
       toast.error("تعذّر الفتح: " + (e instanceof Error ? e.message : String(e)));
     }
   };
+
 
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-black/95 backdrop-blur safe-top safe-bottom">
