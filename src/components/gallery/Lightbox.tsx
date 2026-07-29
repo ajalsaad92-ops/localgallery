@@ -54,7 +54,7 @@ export function Lightbox({ photos, index, onClose, onIndexChange, showDownload }
     return () => window.removeEventListener("keydown", onKey);
   }, [index, goto, close]);
 
-  useEffect(() => { setDx(0); }, [index]);
+  useEffect(() => { setDx(0); setVideoError(false); }, [index]);
 
   // Android hardware back closes the lightbox instead of exiting the tab.
   useEffect(() => pushBackHandler(() => { close(); return true; }), [close]);
