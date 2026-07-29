@@ -66,7 +66,9 @@ const PERMS = [
   '<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>',
   '<uses-permission android:name="android.permission.VIBRATE"/>',
   '<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>',
+  '<uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>',
   '<uses-permission android:name="android.permission.WAKE_LOCK"/>',
+
   '<uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>',
   '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>',
   '<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>',
@@ -582,10 +584,29 @@ public class SyncForegroundService extends Service {
 
     private boolean paused = false;
     private BroadcastReceiver receiver;
+    private android.os.PowerManager.WakeLock wakeLock;
+    private android.net.wifi.WifiManager.WifiLock wifiLock;
 
     @Override
     public void onCreate() {
         super.onCreate();
+        // Keep the CPU (and Wi-Fi radio) alive so uploads continue after the
+        // screen turns off or the app is swiped into the background.
+        try {
+            android.os.PowerManager pm = (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "LocalGallery:sync");
+                wakeLock.setReferenceCounted(false);
+                wakeLock.acquire(6 * 60 * 60 * 1000L);
+            }
+            android.net.wifi.WifiManager wm =
+                (android.net.wifi.WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm != null) {
+                wifiLock = wm.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "LocalGallery:sync");
+                wifiLock.setReferenceCounted(false);
+                wifiLock.acquire();
+            }
+        } catch (Exception ignored) {}
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel ch = new NotificationChannel(
                 CHANNEL_ID, "المزامنة", NotificationManager.IMPORTANCE_LOW);
@@ -593,6 +614,7 @@ public class SyncForegroundService extends Service {
             NotificationManager mgr = getSystemService(NotificationManager.class);
             if (mgr != null) mgr.createNotificationChannel(ch);
         }
+
         receiver = new BroadcastReceiver() {
             @Override public void onReceive(Context c, Intent i) {
                 String a = i.getAction();
@@ -667,8 +689,11 @@ public class SyncForegroundService extends Service {
     @Override
     public void onDestroy() {
         try { if (receiver != null) unregisterReceiver(receiver); } catch (Exception ignored) {}
+        try { if (wakeLock != null && wakeLock.isHeld()) wakeLock.release(); } catch (Exception ignored) {}
+        try { if (wifiLock != null && wifiLock.isHeld()) wifiLock.release(); } catch (Exception ignored) {}
         super.onDestroy();
     }
+
 
     @Override
     public IBinder onBind(Intent intent) { return null; }

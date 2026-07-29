@@ -7,6 +7,8 @@ import {
   telegramFileUrl,
 } from "@/lib/providers/telegram";
 import { logNative, logTg } from "@/lib/diagnostics";
+import { resolveOriginalDate } from "@/lib/captionMeta";
+
 
 const OFFSET_KEY = "tg:updates:offset";
 
@@ -48,7 +50,14 @@ const thumbId = (t?: TelegramThumb | null) => t?.file_id;
 async function insertFromUpdate(u: RawUpdate) {
   const msg = u.message ?? u.channel_post;
   if (!msg) return;
-  const date = (msg.date ?? Math.floor(Date.now() / 1000)) * 1000;
+  // Telegram's message date is the upload time — prefer the original capture
+  // time we embedded in the caption (or the camera filename).
+  const date = resolveOriginalDate({
+    caption: msg.caption,
+    name: msg.document?.file_name,
+    messageDateMs: (msg.date ?? Math.floor(Date.now() / 1000)) * 1000,
+  });
+
 
   const put = async (partial: Partial<MediaAsset> & { id: string; remoteFileId: string }) => {
     const syncedLocal = await photoDb.assets.where("remoteFileId").equals(partial.remoteFileId).first();
@@ -248,13 +257,27 @@ export async function hydrateThumbnails(
 
 
 /** Resolve a full-size URL for a remote asset (getFile → file/bot). */
-export async function resolveRemoteUrl(asset: MediaAsset): Promise<string | null> {
+export async function resolveRemoteUrl(
+  asset: MediaAsset,
+  onProgress?: (received: number, total: number) => void,
+): Promise<string | null> {
   // Personal-account items have no bot file id — stream them through MTProto.
   if (!asset.remoteFileId && asset.remoteMessageId && asset.remoteChatId) {
     const { downloadMessageBlob } = await import("@/lib/providers/mtproto");
-    const blob = await downloadMessageBlob(asset.remoteMessageId);
-    return blob ? URL.createObjectURL(blob) : null;
+    const blob = await downloadMessageBlob(asset.remoteMessageId, {
+      fallbackMime: asset.mime,
+      onProgress,
+    });
+    if (!blob) return null;
+    // Android WebView can't render HEIC — decode it to JPEG on device.
+    const { isHeic, heicBlobToJpegUrl } = await import("@/lib/heic");
+    if (isHeic(blob.type, asset.name)) {
+      const jpeg = await heicBlobToJpegUrl(blob, asset.id);
+      if (jpeg) return jpeg;
+    }
+    return URL.createObjectURL(blob);
   }
+
   if (!asset.remoteFileId) return null;
   const cfg = await photoDb.providers.get("telegram");
   if (!cfg?.botToken) return null;

@@ -54,23 +54,23 @@ export function TelegramScreen() {
   const photos = useMemo<MockPhoto[]>(() => assets.map((a) => {
     const full = urls.full.get(a.id) ?? extraFull.get(a.id);
     const thumb = urls.thumb.get(a.id) ?? a.posterDataUrl;
-    const isHeic = /image\/(heic|heif)/i.test(a.mime);
+    const heic = /image\/(heic|heif)/i.test(a.mime) || /\.(heic|heif)$/i.test(a.name);
     const isVideo = a.kind === "video";
-    // HEIC can't render in <img>. Videos have no image bytes.
-    // Use the JPEG thumbnail Telegram already sends for both.
-    const displayThumb = (isHeic || isVideo) ? (thumb ?? a.posterDataUrl) : (thumb ?? full);
-    const displayFull = isHeic ? (thumb ?? full) : full;
+    // HEIC/video have no directly renderable bytes in the grid — show the
+    // JPEG preview Telegram already stores. The lightbox decodes the original.
+    const displayThumb = (heic || isVideo) ? (thumb ?? a.posterDataUrl) : (thumb ?? full);
     return {
       id: a.id, seed: a.id,
       width: a.width ?? 400, height: a.height ?? 400,
       date: new Date(a.date), name: a.name,
       thumbSrc: displayThumb ?? full,
-      fullSrc: isVideo ? full : displayFull,
-      posterSrc: thumb,
+      fullSrc: full,
+      posterSrc: thumb ?? a.posterDataUrl,
       kind: isVideo ? "video" : "image",
       duration: a.duration, mime: a.mime, provider: a.provider,
     };
   }), [assets, urls, extraFull]);
+
 
   useEffect(() => {
     if (!busy) return;
@@ -113,13 +113,22 @@ export function TelegramScreen() {
   const openAt = async (i: number) => {
     const a = assets[i];
     if (a && !a.remoteFileId && a.remoteMessageId && !extraFull.has(a.id)) {
+      // Videos can be hundreds of MB — show progress instead of a frozen tap.
+      const toastId = a.kind === "video" ? toast.loading("جارٍ تحميل الفيديو…") : undefined;
       try {
-        const url = await resolveRemoteUrl(a);
+        const url = await resolveRemoteUrl(a, (received, total) => {
+          if (!toastId || !total) return;
+          toast.loading(`جارٍ تحميل الفيديو… ${Math.round((received / total) * 100)}%`, { id: toastId });
+        });
         if (url) setExtraFull((m) => new Map(m).set(a.id, url));
-      } catch { /* keep the thumbnail */ }
+        if (toastId) toast.dismiss(toastId);
+      } catch {
+        if (toastId) toast.error("تعذّر تحميل الملف", { id: toastId });
+      }
     }
     runViewTransition(() => setLightbox(i));
   };
+
 
   const resync = async () => {
     setBusy(true);
