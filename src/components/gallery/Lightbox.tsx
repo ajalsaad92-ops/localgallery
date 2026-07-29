@@ -195,38 +195,66 @@ export function Lightbox({ photos, index, onClose, onIndexChange, showDownload }
           }}
         >
           {isVideo && photo.fullSrc ? (
-            <video
-              src={photo.fullSrc}
-              poster={photo.posterSrc}
-              controls
-              autoPlay
-              playsInline
-              preload="metadata"
-              className="max-h-full max-w-full rounded-lg shadow-2xl"
-              style={{ viewTransitionName: `photo-${photo.id}` }}
-              onError={() =>
-                toast.error("تعذّر تشغيل الفيديو في المتصفح — استخدم زر الفتح الخارجي")
-              }
-            />
-          ) : isHeic && photo.fullSrc ? (
-            <div className="flex flex-col items-center gap-3 p-6 text-center text-white/80">
-              <img
-                src={photo.posterSrc ?? photo.fullSrc}
-                alt={photo.name}
-                className="max-h-[70vh] max-w-full rounded-lg shadow-2xl"
+            videoError ? (
+              <div className="flex flex-col items-center gap-3 p-6 text-center text-white/80">
+                {photo.posterSrc && (
+                  <img src={photo.posterSrc} alt={photo.name} className="max-h-[60vh] rounded-lg" />
+                )}
+                <p className="text-xs text-white/60">
+                  ترميز هذا الفيديو غير مدعوم داخل التطبيق — احفظه وشغّله بمشغّل الهاتف.
+                </p>
+                <button
+                  onClick={openExternally}
+                  className="flex items-center gap-1.5 rounded-full bg-white/15 px-4 py-2 text-sm font-semibold"
+                >
+                  <ExternalLink className="h-4 w-4" /> حفظ وفتح خارجياً
+                </button>
+              </div>
+            ) : (
+              <video
+                key={photo.id}
+                src={photo.fullSrc}
+                poster={photo.posterSrc}
+                controls
+                autoPlay
+                playsInline
+                // Videos arrive as a local blob: URL — full buffering keeps
+                // seeking smooth inside the Android WebView.
+                preload="auto"
+                className="max-h-full max-w-full rounded-lg shadow-2xl"
                 style={{ viewTransitionName: `photo-${photo.id}` }}
+                onError={() => setVideoError(true)}
               />
-              <p className="text-xs text-white/60">
-                هذه صورة HEIC — المتصفح لا يعرضها بجودتها الأصلية.
-              </p>
-              <button
-                onClick={openExternally}
-                className="flex items-center gap-1.5 rounded-full bg-white/15 px-4 py-2 text-sm font-semibold"
-              >
-                <ExternalLink className="h-4 w-4" /> فتح بالحجم الأصلي
-              </button>
-            </div>
+            )
+          ) : isHeicItem ? (
+            heicUrl ? (
+              <div className="h-full w-full" style={{ viewTransitionName: `photo-${photo.id}` }}>
+                <ZoomableImage src={heicUrl} alt={photo.name} onZoomChange={setZoomed} />
+              </div>
+            ) : (
+              <div className="flex flex-col items-center gap-3 p-6 text-center text-white/80">
+                {photo.posterSrc && (
+                  <img
+                    src={photo.posterSrc}
+                    alt={photo.name}
+                    className="max-h-[70vh] max-w-full rounded-lg shadow-2xl"
+                  />
+                )}
+                <p className="text-xs text-white/60">
+                  {decoding ? "جارٍ فك ترميز HEIC…" : "تعذّر فك ترميز HEIC على هذا الجهاز."}
+                </p>
+                {!decoding && (
+                  <button
+                    onClick={openExternally}
+                    className="flex items-center gap-1.5 rounded-full bg-white/15 px-4 py-2 text-sm font-semibold"
+                  >
+                    <ExternalLink className="h-4 w-4" /> فتح بالحجم الأصلي
+                  </button>
+                )}
+              </div>
+            )
           ) : photo.fullSrc ? (
+
             <div className="h-full w-full" style={{ viewTransitionName: `photo-${photo.id}` }}>
               <ZoomableImage
                 src={photo.fullSrc}
