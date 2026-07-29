@@ -687,8 +687,11 @@ public class SyncForegroundService extends Service {
     @Override
     public void onDestroy() {
         try { if (receiver != null) unregisterReceiver(receiver); } catch (Exception ignored) {}
+        try { if (wakeLock != null && wakeLock.isHeld()) wakeLock.release(); } catch (Exception ignored) {}
+        try { if (wifiLock != null && wifiLock.isHeld()) wifiLock.release(); } catch (Exception ignored) {}
         super.onDestroy();
     }
+
 
     @Override
     public IBinder onBind(Intent intent) { return null; }
