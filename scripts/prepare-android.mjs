@@ -66,7 +66,9 @@ const PERMS = [
   '<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>',
   '<uses-permission android:name="android.permission.VIBRATE"/>',
   '<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>',
+  '<uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>',
   '<uses-permission android:name="android.permission.WAKE_LOCK"/>',
+
   '<uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>',
   '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>',
   '<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>',
