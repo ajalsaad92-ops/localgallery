@@ -5,6 +5,8 @@
  */
 import { photoDb } from "@/lib/photoDb";
 import { logTg } from "@/lib/diagnostics";
+import { resolveOriginalDate } from "@/lib/captionMeta";
+
 
 
 const KEY_SESSION = "tg:user:session";
