@@ -237,6 +237,7 @@ async function resolveEntity(client: any, target: MtTarget): Promise<any> {
 export async function uploadToTarget(
   file: File,
   onProgress?: (fraction: number) => void,
+  caption?: string,
 ): Promise<{ messageId: number; chatId: string }> {
   const client = await getClient();
   if (!client) throw new Error("لم يتم ربط الحساب الشخصي بعد");
@@ -256,6 +257,9 @@ export async function uploadToTarget(
     const msg = await c.sendFile(entity, {
       file: custom,
       forceDocument: true,
+      // Caption carries the original capture timestamp so the gallery can show
+      // the real date instead of the Telegram upload date.
+      caption,
       // More workers keep large videos from stalling on a single connection.
       workers: big ? 4 : 1,
       progressCallback: onProgress ? (p: number) => onProgress(p) : undefined,
@@ -268,6 +272,7 @@ export async function uploadToTarget(
   }
 
 }
+
 
 export interface MtMediaItem {
   messageId: number;
