@@ -48,7 +48,14 @@ const thumbId = (t?: TelegramThumb | null) => t?.file_id;
 async function insertFromUpdate(u: RawUpdate) {
   const msg = u.message ?? u.channel_post;
   if (!msg) return;
-  const date = (msg.date ?? Math.floor(Date.now() / 1000)) * 1000;
+  // Telegram's message date is the upload time — prefer the original capture
+  // time we embedded in the caption (or the camera filename).
+  const date = resolveOriginalDate({
+    caption: msg.caption,
+    name: msg.document?.file_name,
+    messageDateMs: (msg.date ?? Math.floor(Date.now() / 1000)) * 1000,
+  });
+
 
   const put = async (partial: Partial<MediaAsset> & { id: string; remoteFileId: string }) => {
     const syncedLocal = await photoDb.assets.where("remoteFileId").equals(partial.remoteFileId).first();
