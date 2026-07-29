@@ -442,7 +442,10 @@ export async function fetchMessageThumb(messageId: number): Promise<string | nul
 
 
 /** Download the full bytes of a stored message (for the lightbox / save). */
-export async function downloadMessageBlob(messageId: number): Promise<Blob | null> {
+export async function downloadMessageBlob(
+  messageId: number,
+  opts?: { fallbackMime?: string; onProgress?: (received: number, total: number) => void },
+): Promise<Blob | null> {
   const client = await getClient();
   if (!client) return null;
   const target = await getSavedTarget();
@@ -452,8 +455,40 @@ export async function downloadMessageBlob(messageId: number): Promise<Blob | nul
   const entity = await resolveEntity(c, target);
   const [msg] = await c.getMessages(entity, { ids: [messageId] });
   if (!msg) return null;
-  const buf = await c.downloadMedia(msg);
+  const buf = await c.downloadMedia(msg, {
+    progressCallback: opts?.onProgress
+      ? (received: unknown, total: unknown) => opts.onProgress!(Number(received), Number(total))
+      : undefined,
+  });
   if (!buf) return null;
-  const mime = msg.document?.mimeType ?? "image/jpeg";
+  // Files uploaded as documents often come back as application/octet-stream,
+  // which makes <video>/<img> refuse to render. Prefer a concrete media type.
+  const raw: string = msg.document?.mimeType ?? "";
+  const name: string =
+    (msg.document?.attributes ?? []).find((a: { fileName?: string }) => a.fileName)?.fileName ?? "";
+  const guess = guessMimeFromName(name);
+  const mime =
+    raw && raw !== "application/octet-stream" ? raw : (guess ?? opts?.fallbackMime ?? "image/jpeg");
   return new Blob([new Uint8Array(buf)], { type: mime });
+}
+
+function guessMimeFromName(name: string): string | undefined {
+  const ext = name.split(".").pop()?.toLowerCase();
+  switch (ext) {
+    case "mp4": case "m4v": return "video/mp4";
+    case "mov": return "video/quicktime";
+    case "webm": return "video/webm";
+    case "mkv": return "video/x-matroska";
+    case "3gp": return "video/3gpp";
+    case "avi": return "video/x-msvideo";
+    case "jpg": case "jpeg": return "image/jpeg";
+    case "png": return "image/png";
+    case "webp": return "image/webp";
+    case "gif": return "image/gif";
+    case "heic": return "image/heic";
+    case "heif": return "image/heif";
+    default: return undefined;
+  }
+}
+
 }
