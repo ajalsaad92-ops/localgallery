@@ -280,7 +280,9 @@ export interface MtMediaItem {
   messageId: number;
   chatId: string;
   date: number;
-  name: string;
+  /** Telegram upload time (kept for reference/debugging). */
+  uploadedAt?: number;
+
   size: number;
   mime: string;
   kind: "image" | "video";
