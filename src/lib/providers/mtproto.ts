@@ -282,8 +282,9 @@ export interface MtMediaItem {
   date: number;
   /** Telegram upload time (kept for reference/debugging). */
   uploadedAt?: number;
-
+  name: string;
   size: number;
+
   mime: string;
   kind: "image" | "video";
   width?: number;
