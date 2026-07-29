@@ -159,7 +159,7 @@ export function Lightbox({ photos, index, onClose, onIndexChange, showDownload }
           {index + 1} / {photos.length}
         </div>
         <div className="flex items-center gap-2">
-          {(isVideo || isHeic) && (
+          {(isVideo || isHeicItem) && (
             <button
               onClick={openExternally}
               className="grid h-10 w-10 place-items-center rounded-full bg-white/10 text-white hover:bg-white/20"
