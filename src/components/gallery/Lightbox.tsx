@@ -7,6 +7,8 @@ import { ZoomableImage } from "./ZoomableImage";
 import { runViewTransition } from "@/lib/viewTransition";
 import { pushBackHandler } from "@/lib/backStack";
 import { isNative, saveBlobToDevice, downloadUrlToDevice } from "@/lib/native";
+import { isHeic, heicUrlToJpegUrl } from "@/lib/heic";
+
 
 interface LightboxProps {
   photos: MockPhoto[];
@@ -26,8 +28,12 @@ interface LightboxProps {
 export function Lightbox({ photos, index, onClose, onIndexChange, showDownload }: LightboxProps) {
   const photo = photos[index];
   const [zoomed, setZoomed] = useState(false);
+  const [heicUrl, setHeicUrl] = useState<string | null>(null);
+  const [decoding, setDecoding] = useState(false);
+  const [videoError, setVideoError] = useState(false);
   const dragRef = useRef<{ startX: number; startY: number; dx: number } | null>(null);
   const [dx, setDx] = useState(0);
+
 
   const goto = useCallback((next: number) => {
     if (next < 0 || next >= photos.length) return;
