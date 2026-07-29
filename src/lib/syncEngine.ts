@@ -20,6 +20,13 @@ import {
 } from "@/lib/native";
 import { Network } from "@capacitor/network";
 import { logSync } from "@/lib/diagnostics";
+import { buildCaption, parseNameTs } from "@/lib/captionMeta";
+
+/** Best-known original capture time for a device asset. */
+function originalDateOf(a: MediaAsset): number {
+  return a.exif?.dateTaken ?? parseNameTs(a.name) ?? a.date ?? a.createdAt ?? Date.now();
+}
+
 
 
 
