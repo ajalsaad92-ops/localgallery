@@ -122,7 +122,11 @@ async function uploadOne(asset: MediaAsset, botToken: string, chatId: string, fr
   const blob = await readBlob(asset);
   const file = new File([blob], asset.name, { type: asset.mime || blob.type || "application/octet-stream" });
   logSync("upload", `bot upload start: ${asset.name}`, { bytes: file.size, mime: file.type, kind: asset.kind });
-  const res = await telegramSendDocument(botToken, chatId, file);
+  const res = await telegramSendDocument(botToken, chatId, file, {
+    // Stamp the original capture time into the caption so the viewer can
+    // restore the real date instead of the Telegram upload date.
+    caption: buildCaption(asset.name, originalDateOf(asset)),
+  });
   logSync("upload", `bot upload ok: ${asset.name}`, { messageId: res.messageId });
   const patch: Partial<MediaAsset> = {
     provider: "telegram-remote",
@@ -144,7 +148,7 @@ async function uploadOneViaAccount(asset: MediaAsset, freeBlob: boolean) {
   const blob = await readBlob(asset);
   const file = new File([blob], asset.name, { type: asset.mime || blob.type || "application/octet-stream" });
   logSync("upload", `account upload start: ${asset.name}`, { bytes: file.size, mime: file.type, kind: asset.kind });
-  const res = await uploadToTarget(file);
+  const res = await uploadToTarget(file, undefined, buildCaption(asset.name, originalDateOf(asset)));
   logSync("upload", `account upload ok: ${asset.name}`, res);
   const patch: Partial<MediaAsset> = {
     provider: "telegram-remote",
@@ -158,6 +162,7 @@ async function uploadOneViaAccount(asset: MediaAsset, freeBlob: boolean) {
   }
   await photoDb.assets.update(asset.id, patch);
 }
+
 
 export async function runSyncCycle(): Promise<{ processed: number; failed: number }> {
   if (progress.running) { logSync("cycle", "skipped: already running"); return { processed: 0, failed: 0 }; }
