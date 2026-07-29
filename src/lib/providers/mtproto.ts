@@ -490,5 +490,3 @@ function guessMimeFromName(name: string): string | undefined {
     default: return undefined;
   }
 }
-
-}
