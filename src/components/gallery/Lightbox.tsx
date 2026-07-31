@@ -226,41 +226,39 @@ export function Lightbox({ photos, index, onClose, onIndexChange, showDownload }
                 onError={() => setVideoError(true)}
               />
             )
-          ) : isHeicItem ? (
-            heicUrl ? (
-              <div className="h-full w-full" style={{ viewTransitionName: `photo-${photo.id}` }}>
-                <ZoomableImage src={heicUrl} alt={photo.name} onZoomChange={setZoomed} />
-              </div>
-            ) : (
-              <div className="flex flex-col items-center gap-3 p-6 text-center text-white/80">
-                {photo.posterSrc && (
-                  <img
-                    src={photo.posterSrc}
-                    alt={photo.name}
-                    className="max-h-[70vh] max-w-full rounded-lg shadow-2xl"
-                  />
-                )}
-                <p className="text-xs text-white/60">
-                  {decoding ? "جارٍ فك ترميز HEIC…" : "تعذّر فك ترميز HEIC على هذا الجهاز."}
-                </p>
-                {!decoding && (
-                  <button
-                    onClick={openExternally}
-                    className="flex items-center gap-1.5 rounded-full bg-white/15 px-4 py-2 text-sm font-semibold"
-                  >
-                    <ExternalLink className="h-4 w-4" /> فتح بالحجم الأصلي
-                  </button>
-                )}
-              </div>
-            )
-          ) : photo.fullSrc ? (
-
+          ) : isHeicItem && decoding ? (
+            <div className="flex flex-col items-center gap-3 p-6 text-center text-white/80">
+              {photo.posterSrc && (
+                <img
+                  src={photo.posterSrc}
+                  alt={photo.name}
+                  className="max-h-[70vh] max-w-full rounded-lg shadow-2xl"
+                />
+              )}
+              <p className="text-xs text-white/60">جارٍ فك ترميز HEIC…</p>
+            </div>
+          ) : imageSrc && !imgError ? (
             <div className="h-full w-full" style={{ viewTransitionName: `photo-${photo.id}` }}>
               <ZoomableImage
-                src={photo.fullSrc}
+                src={imageSrc}
                 alt={photo.name}
                 onZoomChange={setZoomed}
               />
+            </div>
+          ) : imageSrc ? (
+            <div className="flex flex-col items-center gap-3 p-6 text-center text-white/80">
+              {photo.posterSrc && (
+                <img src={photo.posterSrc} alt={photo.name} className="max-h-[60vh] rounded-lg" />
+              )}
+              <p className="text-xs text-white/60">
+                هذه الصيغة غير مدعومة للعرض داخل التطبيق — احفظها وافتحها بمعرض الهاتف.
+              </p>
+              <button
+                onClick={openExternally}
+                className="flex items-center gap-1.5 rounded-full bg-white/15 px-4 py-2 text-sm font-semibold"
+              >
+                <ExternalLink className="h-4 w-4" /> حفظ وفتح خارجياً
+              </button>
             </div>
           ) : (
             <div className="text-sm text-white/60">جارٍ التحميل…</div>
