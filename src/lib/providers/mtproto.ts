@@ -336,13 +336,16 @@ export async function fetchChannelMedia(
     const doc = m.document ?? m.media?.document ?? null;
     const photo = m.photo ?? m.media?.photo ?? null;
     if (!doc && !photo) { skippedNoMedia++; return; }
-    const mime: string = doc?.mimeType ?? "image/jpeg";
-    const isVideo = mime.startsWith("video/");
-    const isImage = mime.startsWith("image/") || (!doc && !!photo);
     // Documents sent as generic files (application/octet-stream) still count
     // when the filename looks like media.
     const nameGuess: string = (doc?.attributes ?? []).find((a: { fileName?: string }) => a.fileName)?.fileName ?? "";
-    const looksMedia = /\.(jpe?g|png|webp|gif|heic|heif|mp4|mov|mkv|webm|avi)$/i.test(nameGuess);
+    const rawMime: string = doc?.mimeType ?? "image/jpeg";
+    // Telegram reports uploaded documents as octet-stream — derive the real
+    // type from the filename so the viewer knows how to render it.
+    const mime = /^(image|video)\//i.test(rawMime) ? rawMime : (mimeFromName(nameGuess) ?? rawMime);
+    const isVideo = mime.startsWith("video/");
+    const isImage = mime.startsWith("image/") || (!doc && !!photo);
+    const looksMedia = /\.(jpe?g|png|webp|gif|bmp|tiff?|heic|heif|avif|dng|mp4|mov|mkv|webm|avi|3gp|m4v)$/i.test(nameGuess);
     if (!isVideo && !isImage && !looksMedia) { skippedMime++; return; }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
