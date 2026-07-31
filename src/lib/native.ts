@@ -15,7 +15,8 @@ export const platform = () => Capacitor.getPlatform(); // "ios" | "android" | "w
 
 type NativePermissionState = "granted" | "denied" | "prompt" | "prompt-with-rationale" | "unknown";
 
-export type SyncCommand = "pause" | "resume" | "stop";
+/** "tick" is the background heartbeat emitted by the foreground service. */
+export type SyncCommand = "pause" | "resume" | "stop" | "tick";
 
 interface LocalGalleryMediaPlugin {
   checkGalleryPermissions(): Promise<{ media: NativePermissionState }>;
