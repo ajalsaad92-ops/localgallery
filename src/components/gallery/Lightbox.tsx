@@ -128,6 +128,23 @@ export function Lightbox({ photos, index, onClose, onIndexChange, showDownload }
     return () => { alive = false; };
   }, [photo?.id, photo?.fullSrc, isHeicItem]);
 
+  // The HEIC decode may already have happened upstream (Telegram reader), so
+  // fall back to the original bytes when the local decode returns nothing.
+  const imageSrc = heicUrl ?? photo?.fullSrc ?? null;
+
+  // Exotic formats (tiff, dng, bmp on some devices) fail silently inside the
+  // WebView — probe first so we can offer the "save & open" escape hatch.
+  const [imgError, setImgError] = useState(false);
+  useEffect(() => {
+    setImgError(false);
+    if (isVideo || !imageSrc) return;
+    let alive = true;
+    const probe = new Image();
+    probe.onerror = () => { if (alive) setImgError(true); };
+    probe.src = imageSrc;
+    return () => { alive = false; probe.onerror = null; };
+  }, [imageSrc, isVideo]);
+
   if (!photo) return null;
 
   const openExternally = async () => {
