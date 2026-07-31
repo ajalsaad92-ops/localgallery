@@ -586,6 +586,8 @@ public class SyncForegroundService extends Service {
     private BroadcastReceiver receiver;
     private android.os.PowerManager.WakeLock wakeLock;
     private android.net.wifi.WifiManager.WifiLock wifiLock;
+    private android.os.Handler ticker;
+    private Runnable tick;
 
     @Override
     public void onCreate() {
@@ -627,6 +629,23 @@ public class SyncForegroundService extends Service {
                 sendBroadcast(out);
             }
         };
+        // Heartbeat: the WebView throttles its own timers once the app is in
+        // the background, so the service pings the JS layer instead. The
+        // broadcast reaches the plugin, which calls back into JavaScript and
+        // that call is NOT subject to timer throttling.
+        ticker = new android.os.Handler(android.os.Looper.getMainLooper());
+        tick = new Runnable() {
+            @Override public void run() {
+                if (!paused) {
+                    Intent out = new Intent(BROADCAST_COMMAND);
+                    out.putExtra("action", "tick");
+                    sendBroadcast(out);
+                }
+                ticker.postDelayed(this, 15000);
+            }
+        };
+        ticker.postDelayed(tick, 5000);
+
         IntentFilter f = new IntentFilter();
         f.addAction(ACTION_PAUSE);
         f.addAction(ACTION_RESUME);
@@ -688,6 +707,7 @@ public class SyncForegroundService extends Service {
 
     @Override
     public void onDestroy() {
+        try { if (ticker != null && tick != null) ticker.removeCallbacks(tick); } catch (Exception ignored) {}
         try { if (receiver != null) unregisterReceiver(receiver); } catch (Exception ignored) {}
         try { if (wakeLock != null && wakeLock.isHeld()) wakeLock.release(); } catch (Exception ignored) {}
         try { if (wifiLock != null && wifiLock.isHeld()) wifiLock.release(); } catch (Exception ignored) {}
@@ -711,6 +731,30 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(LocalGalleryMediaPlugin.class);
         super.onCreate(savedInstanceState);
+    }
+
+    // Android suspends the WebView's JS timers when the activity leaves the
+    // screen, which stops uploads mid-way. The foreground service keeps the
+    // process alive, so resume the timers right after the pause/stop.
+    @Override
+    public void onPause() {
+        super.onPause();
+        keepWebViewRunning();
+    }
+
+    @Override
+    public void onStop() {
+        super.onStop();
+        keepWebViewRunning();
+    }
+
+    private void keepWebViewRunning() {
+        try {
+            if (bridge != null && bridge.getWebView() != null) {
+                bridge.getWebView().resumeTimers();
+                bridge.getWebView().onResume();
+            }
+        } catch (Exception ignored) {}
     }
 }
 `);
