@@ -74,6 +74,9 @@ export function useSyncLoop() {
           if (action === "pause") await setSyncSettings({ paused: true });
           else if (action === "resume") { await setSyncSettings({ paused: false }); void runSyncCycle(); }
           else if (action === "stop") await setSyncSettings({ paused: true });
+          // Heartbeat from the foreground service: JS timers are throttled in
+          // the background, so this is what actually keeps uploads going.
+          else if (action === "tick") void runSyncCycle();
         });
         cleanup = () => { void handle.remove(); };
       } catch { /* web / plugin missing */ }
