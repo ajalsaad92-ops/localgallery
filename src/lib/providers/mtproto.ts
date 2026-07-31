@@ -299,6 +299,20 @@ const toDataUrl = (bytes: Uint8Array, mime = "image/jpeg") => {
   return `data:${mime};base64,${btoa(bin)}`;
 };
 
+const MIME_BY_EXT: Record<string, string> = {
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp",
+  gif: "image/gif", bmp: "image/bmp", tif: "image/tiff", tiff: "image/tiff",
+  heic: "image/heic", heif: "image/heif", avif: "image/avif", dng: "image/x-adobe-dng",
+  mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime", mkv: "video/x-matroska",
+  webm: "video/webm", avi: "video/x-msvideo", "3gp": "video/3gpp",
+};
+
+/** Best-effort media MIME from a filename extension. */
+export function mimeFromName(name?: string | null): string | null {
+  const ext = (name ?? "").split(".").pop()?.toLowerCase() ?? "";
+  return MIME_BY_EXT[ext] ?? null;
+}
+
 /** Cache of raw messages so thumbnails can be fetched lazily afterwards. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const msgCache = new Map<number, any>();
