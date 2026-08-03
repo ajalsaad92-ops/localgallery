@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// One-command Android setup for Localphotos Pro.
-// Adds the android platform if missing, builds web, syncs Capacitor, and
-// patches AndroidManifest.xml with every permission the app needs.
+// One-command Android setup.
+// Adds the android platform if missing, builds the web bundle, syncs Capacitor
+// and injects the native pieces: MediaStore scanner, background sync service
+// and the APK self-installer.
 // Run: npm run android
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -32,8 +33,13 @@ if (!existsSync(ANDROID_DIR)) {
   console.log("📱 android/ folder exists — reusing it.");
 }
 
-console.log("\n🛠  Building web bundle...");
-run("npm run build");
+// CI builds the bundle before calling this script, so don't build it twice.
+if (process.env.SKIP_WEB_BUILD === "1") {
+  console.log("\n⏭  Skipping web build (already built by CI).");
+} else {
+  console.log("\n🛠  Building web bundle...");
+  run("npm run build");
+}
 
 console.log("\n🔄 Syncing Capacitor plugins...");
 run("npx cap sync android");
@@ -53,29 +59,22 @@ if (!existsSync(manifestPath)) {
 }
 
 const PERMS = [
-  '<uses-permission android:name="android.permission.CAMERA"/>',
   '<uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>',
   '<uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>',
   '<uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED"/>',
   '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>',
-  '<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/>',
   '<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>',
-  '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>',
-  '<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>',
   '<uses-permission android:name="android.permission.INTERNET"/>',
   '<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>',
   '<uses-permission android:name="android.permission.VIBRATE"/>',
   '<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>',
   '<uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>',
   '<uses-permission android:name="android.permission.WAKE_LOCK"/>',
-
   '<uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>',
   '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>',
   '<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>',
   '<uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>',
-
 ];
-
 
 let xml = readFileSync(manifestPath, "utf8");
 let added = 0;
@@ -85,8 +84,7 @@ const missing = PERMS.filter((p) => {
 });
 
 if (missing.length) {
-  const block = missing.join("\n    ");
-  xml = xml.replace(/<application\b/, `${block}\n\n    <application`);
+  xml = xml.replace(/<application\b/, `${missing.join("\n    ")}\n\n    <application`);
   added = missing.length;
 }
 
@@ -106,11 +104,23 @@ if (!xml.includes("android.support.FILE_PROVIDER_PATHS")) {
   added++;
 }
 
+// stopWithTask=false keeps the upload service (and the process) alive when the
+// user swipes the app out of Recents.
 const serviceBlock = `
         <service
             android:name=".SyncForegroundService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />`;
+            android:stopWithTask="false"
+            android:foregroundServiceType="dataSync" />
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>`;
 
 if (!xml.includes(".SyncForegroundService")) {
   xml = xml.replace(/\s*<\/application>/, `${serviceBlock}\n    </application>`);
@@ -119,24 +129,26 @@ if (!xml.includes(".SyncForegroundService")) {
 
 writeFileSync(manifestPath, xml);
 
-const filePathsPath = resolve("android/app/src/main/res/xml/file_paths.xml");
-writeIfChanged(filePathsPath, `<?xml version="1.0" encoding="utf-8"?>
+writeIfChanged(
+  resolve("android/app/src/main/res/xml/file_paths.xml"),
+  `<?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path name="cache" path="." />
     <external-files-path name="external_files" path="." />
 </paths>
-`);
+`,
+);
 
-// ---- Native Android bridge: real MediaStore gallery scanner + internal APK installer
+// ---- Native bridge ----------------------------------------------------------
 const javaDir = resolve(`android/app/src/main/java/${PACKAGE_DIR}`);
-const pluginPath = resolve(javaDir, "LocalGalleryMediaPlugin.java");
-const mainActivityPath = resolve(javaDir, "MainActivity.java");
 
-writeIfChanged(pluginPath, `package ${APP_ID};
+writeIfChanged(
+  resolve(javaDir, "LocalGalleryMediaPlugin.java"),
+  `package ${APP_ID};
 
 import android.Manifest;
-import android.app.Activity;
 import android.content.BroadcastReceiver;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -144,6 +156,7 @@ import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
 import android.provider.Settings;
@@ -168,9 +181,6 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
 
 @CapacitorPlugin(
     name = "LocalGalleryMedia",
@@ -209,26 +219,13 @@ public class LocalGalleryMediaPlugin extends Plugin {
         super.handleOnDestroy();
     }
 
-    private static class AssetRow {
-        String id;
-        String name;
-        String mime;
-        long size;
-        long date;
-        int width;
-        int height;
-        long duration;
-        String kind;
-        Uri uri;
-    }
-
-
+    // ---- permissions --------------------------------------------------------
     private boolean hasGalleryAccess() {
         Context ctx = getContext();
         if (Build.VERSION.SDK_INT >= 33) {
             boolean images = ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED;
             boolean videos = ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_MEDIA_VIDEO) == PackageManager.PERMISSION_GRANTED;
-            boolean selected = true;
+            boolean selected = false;
             if (Build.VERSION.SDK_INT >= 34) {
                 selected = ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == PackageManager.PERMISSION_GRANTED;
             }
@@ -250,10 +247,7 @@ public class LocalGalleryMediaPlugin extends Plugin {
 
     @PluginMethod
     public void requestGalleryPermissions(PluginCall call) {
-        if (hasGalleryAccess()) {
-            call.resolve(permissionResult());
-            return;
-        }
+        if (hasGalleryAccess()) { call.resolve(permissionResult()); return; }
         if (Build.VERSION.SDK_INT >= 34) {
             requestPermissionForAliases(new String[] { "media13", "media14Selected" }, call, "galleryPermsCallback");
         } else if (Build.VERSION.SDK_INT >= 33) {
@@ -268,185 +262,156 @@ public class LocalGalleryMediaPlugin extends Plugin {
         call.resolve(permissionResult());
     }
 
-    private int getInt(Cursor c, String col) {
-        int i = c.getColumnIndex(col);
-        if (i < 0 || c.isNull(i)) return 0;
-        return c.getInt(i);
-    }
-
-    private long getLong(Cursor c, String col) {
-        int i = c.getColumnIndex(col);
-        if (i < 0 || c.isNull(i)) return 0L;
-        return c.getLong(i);
-    }
-
-    private String getString(Cursor c, String col) {
-        int i = c.getColumnIndex(col);
-        if (i < 0 || c.isNull(i)) return "";
-        return c.getString(i);
-    }
-
-    private void queryImages(ArrayList<AssetRow> rows) {
-        String[] projection = new String[] {
-            MediaStore.Images.Media._ID,
-            MediaStore.Images.Media.DISPLAY_NAME,
-            MediaStore.Images.Media.MIME_TYPE,
-            MediaStore.Images.Media.SIZE,
-            MediaStore.Images.Media.DATE_TAKEN,
-            MediaStore.Images.Media.DATE_MODIFIED,
-            MediaStore.Images.Media.WIDTH,
-            MediaStore.Images.Media.HEIGHT
-        };
-        Cursor cursor = getContext().getContentResolver().query(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            projection,
-            null,
-            null,
-            MediaStore.Images.Media.DATE_TAKEN + " DESC"
-        );
-        if (cursor == null) return;
-        try {
-            while (cursor.moveToNext()) {
-                long mediaId = getLong(cursor, MediaStore.Images.Media._ID);
-                long taken = getLong(cursor, MediaStore.Images.Media.DATE_TAKEN);
-                long modified = getLong(cursor, MediaStore.Images.Media.DATE_MODIFIED) * 1000L;
-                AssetRow row = new AssetRow();
-                row.kind = "image";
-                row.id = "image-" + mediaId;
-                row.name = getString(cursor, MediaStore.Images.Media.DISPLAY_NAME);
-                if (row.name.length() == 0) row.name = row.id + ".jpg";
-                row.mime = getString(cursor, MediaStore.Images.Media.MIME_TYPE);
-                if (row.mime.length() == 0) row.mime = "image/*";
-                row.size = getLong(cursor, MediaStore.Images.Media.SIZE);
-                row.date = taken > 0 ? taken : modified;
-                row.width = getInt(cursor, MediaStore.Images.Media.WIDTH);
-                row.height = getInt(cursor, MediaStore.Images.Media.HEIGHT);
-                row.duration = 0;
-                row.uri = Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, String.valueOf(mediaId));
-                rows.add(row);
-            }
-        } finally {
-            cursor.close();
-        }
-    }
-
-    private void queryVideos(ArrayList<AssetRow> rows) {
-        String[] projection = new String[] {
-            MediaStore.Video.Media._ID,
-            MediaStore.Video.Media.DISPLAY_NAME,
-            MediaStore.Video.Media.MIME_TYPE,
-            MediaStore.Video.Media.SIZE,
-            MediaStore.Video.Media.DATE_TAKEN,
-            MediaStore.Video.Media.DATE_MODIFIED,
-            MediaStore.Video.Media.WIDTH,
-            MediaStore.Video.Media.HEIGHT,
-            MediaStore.Video.Media.DURATION
-        };
-        Cursor cursor = getContext().getContentResolver().query(
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-            projection,
-            null,
-            null,
-            MediaStore.Video.Media.DATE_TAKEN + " DESC"
-        );
-        if (cursor == null) return;
-        try {
-            while (cursor.moveToNext()) {
-                long mediaId = getLong(cursor, MediaStore.Video.Media._ID);
-                long taken = getLong(cursor, MediaStore.Video.Media.DATE_TAKEN);
-                long modified = getLong(cursor, MediaStore.Video.Media.DATE_MODIFIED) * 1000L;
-                AssetRow row = new AssetRow();
-                row.kind = "video";
-                row.id = "video-" + mediaId;
-                row.name = getString(cursor, MediaStore.Video.Media.DISPLAY_NAME);
-                if (row.name.length() == 0) row.name = row.id + ".mp4";
-                row.mime = getString(cursor, MediaStore.Video.Media.MIME_TYPE);
-                if (row.mime.length() == 0) row.mime = "video/*";
-                row.size = getLong(cursor, MediaStore.Video.Media.SIZE);
-                row.date = taken > 0 ? taken : modified;
-                row.width = getInt(cursor, MediaStore.Video.Media.WIDTH);
-                row.height = getInt(cursor, MediaStore.Video.Media.HEIGHT);
-                row.duration = getLong(cursor, MediaStore.Video.Media.DURATION) / 1000L;
-                row.uri = Uri.withAppendedPath(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, String.valueOf(mediaId));
-                rows.add(row);
-            }
-        } finally {
-            cursor.close();
-        }
-    }
+    // ---- gallery scan -------------------------------------------------------
+    private int getInt(Cursor c, int i) { return (i < 0 || c.isNull(i)) ? 0 : c.getInt(i); }
+    private long getLong(Cursor c, int i) { return (i < 0 || c.isNull(i)) ? 0L : c.getLong(i); }
+    private String getStr(Cursor c, int i) { return (i < 0 || c.isNull(i)) ? "" : c.getString(i); }
 
     private String toWebPath(Uri uri) {
-        String localUrl = getBridge().getLocalUrl();
-        String raw = uri.toString().replace("content:/", "");
-        return localUrl + Bridge.CAPACITOR_CONTENT_START + raw;
+        return getBridge().getLocalUrl() + Bridge.CAPACITOR_CONTENT_START
+             + uri.toString().replace("content:/", "");
     }
 
+    /**
+     * One page of the device gallery.
+     *
+     * Images and videos both live in MediaStore.Files, so a single query with a
+     * real LIMIT/OFFSET returns exactly the requested page. The previous
+     * implementation read and sorted the entire gallery for every page, which
+     * made a full import quadratic in the number of photos.
+     */
     @PluginMethod
     public void scanGallery(PluginCall call) {
-        if (!hasGalleryAccess()) {
-            call.reject("gallery permission is required");
-            return;
-        }
-        int offset = Math.max(0, call.getInt("offset", 0));
-        int limit = Math.max(1, call.getInt("limit", 80));
+        if (!hasGalleryAccess()) { call.reject("gallery permission is required"); return; }
 
-        ArrayList<AssetRow> rows = new ArrayList<>();
-        queryImages(rows);
-        queryVideos(rows);
-        Collections.sort(rows, new Comparator<AssetRow>() {
-            @Override public int compare(AssetRow a, AssetRow b) {
-                return Long.compare(b.date, a.date);
-            }
-        });
+        int offset = Math.max(0, call.getInt("offset", 0));
+        int limit = Math.max(1, call.getInt("limit", 200));
+        long since = call.getLong("since", 0L) == null ? 0L : call.getLong("since", 0L);
+
+        Uri uri = MediaStore.Files.getContentUri("external");
+        String[] projection;
+        projection = new String[] {
+            MediaStore.Files.FileColumns._ID,
+            MediaStore.Files.FileColumns.DISPLAY_NAME,
+            MediaStore.Files.FileColumns.MIME_TYPE,
+            MediaStore.Files.FileColumns.SIZE,
+            MediaStore.Files.FileColumns.DATE_MODIFIED,
+            MediaStore.Files.FileColumns.WIDTH,
+            MediaStore.Files.FileColumns.HEIGHT,
+            MediaStore.Files.FileColumns.MEDIA_TYPE
+        };
+        // DURATION only exists on MediaStore.Files from API 29 onwards.
+        if (Build.VERSION.SDK_INT >= 29) {
+            String[] withDuration = new String[projection.length + 1];
+            System.arraycopy(projection, 0, withDuration, 0, projection.length);
+            withDuration[projection.length] = MediaStore.Files.FileColumns.DURATION;
+            projection = withDuration;
+        }
+
+        String selection = MediaStore.Files.FileColumns.MEDIA_TYPE + " IN (?,?)";
+        String[] args;
+        if (since > 0) {
+            selection += " AND " + MediaStore.Files.FileColumns.DATE_MODIFIED + " > ?";
+            args = new String[] {
+                String.valueOf(MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE),
+                String.valueOf(MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO),
+                String.valueOf(since / 1000L)
+            };
+        } else {
+            args = new String[] {
+                String.valueOf(MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE),
+                String.valueOf(MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO)
+            };
+        }
+
+        String order = MediaStore.Files.FileColumns.DATE_MODIFIED + " DESC";
+        ContentResolver cr = getContext().getContentResolver();
+        Cursor cursor;
+        if (Build.VERSION.SDK_INT >= 26) {
+            Bundle q = new Bundle();
+            q.putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection);
+            q.putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args);
+            q.putString(ContentResolver.QUERY_ARG_SQL_SORT_ORDER, order);
+            q.putInt(ContentResolver.QUERY_ARG_LIMIT, limit);
+            q.putInt(ContentResolver.QUERY_ARG_OFFSET, offset);
+            cursor = cr.query(uri, projection, q, null);
+        } else {
+            cursor = cr.query(uri, projection, selection, args,
+                order + " LIMIT " + limit + " OFFSET " + offset);
+        }
 
         JSArray items = new JSArray();
-        int end = Math.min(rows.size(), offset + limit);
-        for (int i = offset; i < end; i++) {
-            AssetRow row = rows.get(i);
-            JSObject obj = new JSObject();
-            obj.put("id", row.id);
-            obj.put("name", row.name);
-            obj.put("mime", row.mime);
-            obj.put("size", row.size);
-            obj.put("date", row.date > 0 ? row.date : System.currentTimeMillis());
-            obj.put("width", row.width);
-            obj.put("height", row.height);
-            obj.put("duration", row.duration);
-            obj.put("kind", row.kind);
-            obj.put("webPath", toWebPath(row.uri));
-            items.put(obj);
+        if (cursor != null) {
+            try {
+                int iId = cursor.getColumnIndex(MediaStore.Files.FileColumns._ID);
+                int iName = cursor.getColumnIndex(MediaStore.Files.FileColumns.DISPLAY_NAME);
+                int iMime = cursor.getColumnIndex(MediaStore.Files.FileColumns.MIME_TYPE);
+                int iSize = cursor.getColumnIndex(MediaStore.Files.FileColumns.SIZE);
+                int iMod = cursor.getColumnIndex(MediaStore.Files.FileColumns.DATE_MODIFIED);
+                int iW = cursor.getColumnIndex(MediaStore.Files.FileColumns.WIDTH);
+                int iH = cursor.getColumnIndex(MediaStore.Files.FileColumns.HEIGHT);
+                int iType = cursor.getColumnIndex(MediaStore.Files.FileColumns.MEDIA_TYPE);
+                int iDur = Build.VERSION.SDK_INT >= 29
+                    ? cursor.getColumnIndex(MediaStore.Files.FileColumns.DURATION) : -1;
+
+                while (cursor.moveToNext()) {
+                    long id = getLong(cursor, iId);
+                    boolean isVideo = getInt(cursor, iType) == MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO;
+                    long modifiedMs = getLong(cursor, iMod) * 1000L;
+
+                    String name = getStr(cursor, iName);
+                    if (name.length() == 0) name = (isVideo ? "video-" : "image-") + id + (isVideo ? ".mp4" : ".jpg");
+                    String mime = getStr(cursor, iMime);
+                    if (mime.length() == 0) mime = isVideo ? "video/*" : "image/*";
+
+                    Uri itemUri = Uri.withAppendedPath(uri, String.valueOf(id));
+
+                    JSObject o = new JSObject();
+                    o.put("id", (isVideo ? "video-" : "image-") + id);
+                    o.put("name", name);
+                    o.put("mime", mime);
+                    o.put("size", getLong(cursor, iSize));
+                    o.put("date", modifiedMs > 0 ? modifiedMs : System.currentTimeMillis());
+                    o.put("width", getInt(cursor, iW));
+                    o.put("height", getInt(cursor, iH));
+                    o.put("duration", isVideo ? getLong(cursor, iDur) / 1000L : 0);
+                    o.put("kind", isVideo ? "video" : "image");
+                    o.put("webPath", toWebPath(itemUri));
+                    items.put(o);
+                }
+            } finally {
+                cursor.close();
+            }
         }
 
         JSObject ret = new JSObject();
-        ret.put("total", rows.size());
         ret.put("items", items);
+        ret.put("count", items.length());
         call.resolve(ret);
     }
 
+    // ---- self-update --------------------------------------------------------
     @PluginMethod
     public void installApk(PluginCall call) {
         String url = call.getString("url", "");
-        if (url.length() == 0) {
-            call.reject("Missing APK URL");
-            return;
-        }
+        if (url.length() == 0) { call.reject("Missing APK URL"); return; }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !getContext().getPackageManager().canRequestPackageInstalls()) {
             Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getContext().getPackageName()));
             settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             getContext().startActivity(settings);
-            call.reject("Allow install unknown apps for LocalGallery Pro, then press update again.");
+            call.reject("فعّل «تثبيت تطبيقات غير معروفة» ثم اضغط تحديث مرة أخرى.");
             return;
         }
-
         try {
             String fileName = URLUtil.guessFileName(url, null, "application/vnd.android.package-archive");
-            if (!fileName.endsWith(".apk")) fileName = "localgallery-update.apk";
+            if (!fileName.endsWith(".apk")) fileName = "update.apk";
             File dir = getContext().getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
             if (dir == null) dir = getContext().getCacheDir();
             File apk = new File(dir, fileName);
 
             HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
             conn.setRequestProperty("Accept", "application/vnd.android.package-archive,*/*");
+            conn.setInstanceFollowRedirects(true);
             conn.connect();
             if (conn.getResponseCode() < 200 || conn.getResponseCode() >= 300) {
                 call.reject("APK download failed: HTTP " + conn.getResponseCode());
@@ -466,11 +431,19 @@ public class LocalGalleryMediaPlugin extends Plugin {
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
             getContext().startActivity(intent);
 
-            JSObject ret = new JSObject();
-            ret.put("ok", true);
-            call.resolve(ret);
+            JSObject ret = new JSObject(); ret.put("ok", true); call.resolve(ret);
         } catch (Exception e) {
             call.reject("Install failed: " + e.getMessage(), e);
+        }
+    }
+
+    // ---- battery ------------------------------------------------------------
+    private boolean isIgnoringBatteryOptimizations() {
+        try {
+            android.os.PowerManager pm = (android.os.PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+            return pm != null && pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -485,11 +458,7 @@ public class LocalGalleryMediaPlugin extends Plugin {
     public void requestBatteryOptimizationExemption(PluginCall call) {
         JSObject ret = new JSObject();
         try {
-            if (isIgnoringBatteryOptimizations()) {
-                ret.put("ignoring", true);
-                call.resolve(ret);
-                return;
-            }
+            if (isIgnoringBatteryOptimizations()) { ret.put("ignoring", true); call.resolve(ret); return; }
             Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
             intent.setData(Uri.parse("package:" + getContext().getPackageName()));
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -508,57 +477,58 @@ public class LocalGalleryMediaPlugin extends Plugin {
         }
     }
 
-    private boolean isIgnoringBatteryOptimizations() {
-        try {
-            android.os.PowerManager pm = (android.os.PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
-            if (pm == null) return false;
-            return pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
-        } catch (Exception e) {
-            return false;
+    // ---- foreground service -------------------------------------------------
+    private void send(String action, PluginCall call, boolean withProgress) {
+        Intent svc = new Intent(getContext(), SyncForegroundService.class);
+        svc.setAction(action);
+        svc.putExtra("title", call.getString("title", "جارٍ المزامنة"));
+        svc.putExtra("text", call.getString("text", ""));
+        if (withProgress) {
+            svc.putExtra("progress", call.getInt("progress", 0));
+            svc.putExtra("max", call.getInt("max", 0));
         }
-    }
-
-
-
-    @PluginMethod
-    public void startSyncService(PluginCall call) {
-        String title = call.getString("title", "جاري المزامنة");
-        String text = call.getString("text", "");
-        Intent svc = new Intent(getContext(), SyncForegroundService.class);
-        svc.setAction("START");
-        svc.putExtra("title", title);
-        svc.putExtra("text", text);
         if (Build.VERSION.SDK_INT >= 26) getContext().startForegroundService(svc);
         else getContext().startService(svc);
         JSObject ret = new JSObject(); ret.put("ok", true); call.resolve(ret);
     }
 
-    @PluginMethod
-    public void updateSyncService(PluginCall call) {
-        String title = call.getString("title", "جاري المزامنة");
-        String text = call.getString("text", "");
-        Intent svc = new Intent(getContext(), SyncForegroundService.class);
-        svc.setAction("UPDATE");
-        svc.putExtra("title", title);
-        svc.putExtra("text", text);
-        svc.putExtra("progress", call.getInt("progress", 0));
-        svc.putExtra("max", call.getInt("max", 0));
-        if (Build.VERSION.SDK_INT >= 26) getContext().startForegroundService(svc);
-        else getContext().startService(svc);
-        JSObject ret = new JSObject(); ret.put("ok", true); call.resolve(ret);
-    }
+    @PluginMethod public void startSyncService(PluginCall call) { send("START", call, false); }
+    @PluginMethod public void updateSyncService(PluginCall call) { send("UPDATE", call, true); }
 
     @PluginMethod
     public void stopSyncService(PluginCall call) {
+        // Only drops the visible progress notification. When background sync is
+        // armed the service stays resident in its idle "watching" state.
         Intent svc = new Intent(getContext(), SyncForegroundService.class);
-        getContext().stopService(svc);
+        svc.setAction("IDLE");
+        if (Build.VERSION.SDK_INT >= 26) getContext().startForegroundService(svc);
+        else getContext().startService(svc);
+        JSObject ret = new JSObject(); ret.put("ok", true); call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void setBackgroundSync(PluginCall call) {
+        boolean enabled = Boolean.TRUE.equals(call.getBoolean("enabled", false));
+        SyncForegroundService.setArmed(getContext(), enabled);
+        Intent svc = new Intent(getContext(), SyncForegroundService.class);
+        if (enabled) {
+            svc.setAction("IDLE");
+            if (Build.VERSION.SDK_INT >= 26) getContext().startForegroundService(svc);
+            else getContext().startService(svc);
+        } else {
+            // stopService is safe whether or not the service is running;
+            // startService() on a dead service from the background would throw.
+            getContext().stopService(svc);
+        }
         JSObject ret = new JSObject(); ret.put("ok", true); call.resolve(ret);
     }
 }
-`);
+`,
+);
 
-const syncServicePath = resolve(javaDir, "SyncForegroundService.java");
-writeIfChanged(syncServicePath, `package ${APP_ID};
+writeIfChanged(
+  resolve(javaDir, "SyncForegroundService.java"),
+  `package ${APP_ID};
 
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -569,31 +539,54 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.IBinder;
 
 import androidx.core.app.NotificationCompat;
 
+/**
+ * Keeps uploads alive while the app is not in the foreground.
+ *
+ * Android suspends a backgrounded WebView's JS timers, so this service holds a
+ * wake lock and broadcasts a "tick" that the plugin forwards into JavaScript —
+ * a bridge call is not subject to timer throttling. While "armed" the service
+ * stays resident between queues so a newly taken photo is picked up without the
+ * user opening the app.
+ */
 public class SyncForegroundService extends Service {
     private static final String CHANNEL_ID = "sync_channel";
     private static final int NOTIF_ID = 4711;
+    private static final String PREFS = "sync_prefs";
+    private static final String KEY_ARMED = "armed";
+    private static final long TICK_MS = 15000L;
+
     public static final String ACTION_PAUSE = "app.lovable.sync.PAUSE";
     public static final String ACTION_RESUME = "app.lovable.sync.RESUME";
     public static final String ACTION_STOP = "app.lovable.sync.STOP";
     public static final String BROADCAST_COMMAND = "app.lovable.sync.COMMAND";
 
     private boolean paused = false;
+    private boolean active = false;
     private BroadcastReceiver receiver;
     private android.os.PowerManager.WakeLock wakeLock;
     private android.net.wifi.WifiManager.WifiLock wifiLock;
     private android.os.Handler ticker;
     private Runnable tick;
 
+    public static void setArmed(Context ctx, boolean armed) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+           .edit().putBoolean(KEY_ARMED, armed).apply();
+    }
+
+    public static boolean isArmed(Context ctx) {
+        return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                  .getBoolean(KEY_ARMED, false);
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
-        // Keep the CPU (and Wi-Fi radio) alive so uploads continue after the
-        // screen turns off or the app is swiped into the background.
         try {
             android.os.PowerManager pm = (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
             if (pm != null) {
@@ -609,10 +602,12 @@ public class SyncForegroundService extends Service {
                 wifiLock.acquire();
             }
         } catch (Exception ignored) {}
+
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel ch = new NotificationChannel(
                 CHANNEL_ID, "المزامنة", NotificationManager.IMPORTANCE_LOW);
-            ch.setDescription("إشعار مستمر أثناء رفع الصور إلى تليكرام");
+            ch.setDescription("إشعار مستمر أثناء رفع الصور إلى تيليجرام");
+            ch.setShowBadge(false);
             NotificationManager mgr = getSystemService(NotificationManager.class);
             if (mgr != null) mgr.createNotificationChannel(ch);
         }
@@ -621,27 +616,30 @@ public class SyncForegroundService extends Service {
             @Override public void onReceive(Context c, Intent i) {
                 String a = i.getAction();
                 if (a == null) return;
-                Intent out = new Intent(BROADCAST_COMMAND);
+                Intent out = new Intent(BROADCAST_COMMAND).setPackage(getPackageName());
                 if (ACTION_PAUSE.equals(a)) { paused = true; out.putExtra("action", "pause"); }
                 else if (ACTION_RESUME.equals(a)) { paused = false; out.putExtra("action", "resume"); }
-                else if (ACTION_STOP.equals(a)) { out.putExtra("action", "stop"); sendBroadcast(out); stopSelf(); return; }
-                else return;
+                else if (ACTION_STOP.equals(a)) {
+                    out.putExtra("action", "stop");
+                    sendBroadcast(out);
+                    setArmed(getApplicationContext(), false);
+                    stopSelf();
+                    return;
+                } else return;
                 sendBroadcast(out);
+                notifyNow();
             }
         };
-        // Heartbeat: the WebView throttles its own timers once the app is in
-        // the background, so the service pings the JS layer instead. The
-        // broadcast reaches the plugin, which calls back into JavaScript and
-        // that call is NOT subject to timer throttling.
+
         ticker = new android.os.Handler(android.os.Looper.getMainLooper());
         tick = new Runnable() {
             @Override public void run() {
                 if (!paused) {
-                    Intent out = new Intent(BROADCAST_COMMAND);
+                    Intent out = new Intent(BROADCAST_COMMAND).setPackage(getPackageName());
                     out.putExtra("action", "tick");
                     sendBroadcast(out);
                 }
-                ticker.postDelayed(this, 15000);
+                ticker.postDelayed(this, TICK_MS);
             }
         };
         ticker.postDelayed(tick, 5000);
@@ -663,16 +661,12 @@ public class SyncForegroundService extends Service {
         return PendingIntent.getBroadcast(this, action.hashCode(), i, flags);
     }
 
-    @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        String action = intent != null ? intent.getAction() : null;
-        if ("STOP".equals(action)) { stopSelf(); return START_NOT_STICKY; }
+    private String title = "مزامنة الصور";
+    private String text = "بانتظار صور جديدة";
+    private int progress = 0;
+    private int max = 0;
 
-        String title = intent != null ? intent.getStringExtra("title") : "جاري المزامنة";
-        String text = intent != null ? intent.getStringExtra("text") : "";
-        int progress = intent != null ? intent.getIntExtra("progress", 0) : 0;
-        int max = intent != null ? intent.getIntExtra("max", 0) : 0;
-
+    private Notification build() {
         Intent openIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
         PendingIntent pi = openIntent != null
             ? PendingIntent.getActivity(this, 0, openIntent,
@@ -680,28 +674,78 @@ public class SyncForegroundService extends Service {
             : null;
 
         NotificationCompat.Builder b = new NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(title != null ? title : "جاري المزامنة")
-            .setContentText(paused ? "موقوفة مؤقتاً" : (text != null ? text : ""))
-            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setContentTitle(title)
+            .setContentText(paused ? "موقوفة مؤقتاً" : text)
+            .setSmallIcon(active ? android.R.drawable.stat_sys_upload : android.R.drawable.stat_notify_sync)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setSilent(true)
             .setPriority(NotificationCompat.PRIORITY_LOW);
         if (pi != null) b.setContentIntent(pi);
-        if (max > 0) b.setProgress(max, progress, paused);
+        if (active && max > 0) b.setProgress(max, progress, false);
 
-        if (paused) {
-            b.addAction(0, "استئناف", actionIntent(ACTION_RESUME));
-        } else {
-            b.addAction(0, "إيقاف مؤقت", actionIntent(ACTION_PAUSE));
+        if (active) {
+            if (paused) b.addAction(0, "استئناف", actionIntent(ACTION_RESUME));
+            else b.addAction(0, "إيقاف مؤقت", actionIntent(ACTION_PAUSE));
         }
-        b.addAction(0, "إيقاف", actionIntent(ACTION_STOP));
+        b.addAction(0, "إيقاف المزامنة", actionIntent(ACTION_STOP));
+        return b.build();
+    }
 
-        Notification n = b.build();
+    private void notifyNow() {
+        NotificationManager mgr = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (mgr != null) mgr.notify(NOTIF_ID, build());
+    }
+
+    private void goForeground() {
         if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(NOTIF_ID, n, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+            startForeground(NOTIF_ID, build(), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
         } else {
-            startForeground(NOTIF_ID, n);
+            startForeground(NOTIF_ID, build());
         }
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        String action = intent != null ? intent.getAction() : null;
+
+        // A service launched with startForegroundService() MUST call
+        // startForeground() within a few seconds or Android kills the process
+        // with ForegroundServiceDidNotStartInTimeException — even if the very
+        // next thing it does is stop itself. So promote first, decide after.
+        if ("STOP".equals(action)) {
+            active = false;
+            goForeground();
+            setArmed(getApplicationContext(), false);
+            stopForeground(true);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+
+        if ("IDLE".equals(action)) {
+            active = false;
+            title = "مزامنة الصور";
+            text = "بانتظار صور جديدة";
+            progress = 0; max = 0;
+            goForeground();
+            // Nothing running and nothing to watch — no reason to stay alive.
+            if (!isArmed(getApplicationContext())) {
+                stopForeground(true);
+                stopSelf();
+                return START_NOT_STICKY;
+            }
+            return START_STICKY;
+        }
+
+        // START / UPDATE — an upload queue is running.
+        active = true;
+        if (intent != null) {
+            if (intent.getStringExtra("title") != null) title = intent.getStringExtra("title");
+            if (intent.getStringExtra("text") != null) text = intent.getStringExtra("text");
+            progress = intent.getIntExtra("progress", progress);
+            max = intent.getIntExtra("max", max);
+        }
+        goForeground();
         return START_STICKY;
     }
 
@@ -714,14 +758,40 @@ public class SyncForegroundService extends Service {
         super.onDestroy();
     }
 
-
     @Override
     public IBinder onBind(Intent intent) { return null; }
 }
-`);
+`,
+);
 
+writeIfChanged(
+  resolve(javaDir, "BootReceiver.java"),
+  `package ${APP_ID};
 
-writeIfChanged(mainActivityPath, `package ${APP_ID};
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.os.Build;
+
+/** Brings the sync watcher back after a reboot or an app update. */
+public class BootReceiver extends BroadcastReceiver {
+    @Override
+    public void onReceive(Context context, Intent intent) {
+        if (!SyncForegroundService.isArmed(context)) return;
+        Intent svc = new Intent(context, SyncForegroundService.class);
+        svc.setAction("IDLE");
+        try {
+            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(svc);
+            else context.startService(svc);
+        } catch (Exception ignored) {}
+    }
+}
+`,
+);
+
+writeIfChanged(
+  resolve(javaDir, "MainActivity.java"),
+  `package ${APP_ID};
 
 import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;
@@ -733,9 +803,9 @@ public class MainActivity extends BridgeActivity {
         super.onCreate(savedInstanceState);
     }
 
-    // Android suspends the WebView's JS timers when the activity leaves the
-    // screen, which stops uploads mid-way. The foreground service keeps the
-    // process alive, so resume the timers right after the pause/stop.
+    // Android suspends the WebView's JS timers once the activity leaves the
+    // screen, which would stall uploads mid-queue. The foreground service keeps
+    // the process alive, so resume the timers right after the pause/stop.
     @Override
     public void onPause() {
         super.onPause();
@@ -757,12 +827,11 @@ public class MainActivity extends BridgeActivity {
         } catch (Exception ignored) {}
     }
 }
-`);
+`,
+);
 
-// ---- Version stamping (so Android accepts an in-place update) --------------
-// Android refuses to install an APK whose versionCode is lower than the
-// installed one, and package managers can skip an identical build. Derive a
-// monotonic versionCode from the CI run number (or the timestamp locally).
+// ---- Version stamping -------------------------------------------------------
+// Android refuses an APK whose versionCode is lower than the installed one.
 const gradlePath = resolve("android/app/build.gradle");
 if (existsSync(gradlePath)) {
   const pkgVersion = JSON.parse(readFileSync(resolve("package.json"), "utf8")).version || "1.0.0";
@@ -781,11 +850,5 @@ console.log(
     ? `\n✅ Patched AndroidManifest.xml — added ${added} item(s).`
     : `\n✅ AndroidManifest.xml already had every required item.`,
 );
-
-console.log("\n✅ Native LocalGalleryMedia plugin is installed for Android builds.");
-
-console.log(
-  "\n🎉 Ready! Open Android Studio with:\n" +
-    "   npx cap open android\n" +
-    "then hit ▶ Run, or Build → Build APK(s).\n",
-);
+console.log("✅ Native plugin, background service and boot receiver installed.");
+console.log("\n🎉 Ready:  npx cap open android\n");

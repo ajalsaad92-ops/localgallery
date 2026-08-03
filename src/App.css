@@ -1,3 +1,0 @@
-/* Intentionally empty — full-bleed layout is handled by index.css + Tailwind.
-   The old #root { max-width: 1280px } cap has been removed so the gallery
-   spans the entire viewport (Google Photos parity). */

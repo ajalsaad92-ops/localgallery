@@ -45,51 +45,57 @@ jobs:
         uses: android-actions/setup-android@v3
 
       # === توقيع ثابت للأبد ===
-      # الأولوية: (1) Secret اسمه ANDROID_KEYSTORE_BASE64 إن وُجد
-      #           (2) Cache للـ keystore (احتياطي)
-      #           (3) توليد جديد (آخر ملاذ — سيكسر التحديث لمرة واحدة فقط)
-      - name: Restore keystore from GitHub Secret
-        id: keystore_secret
-        if: env.ANDROID_KEYSTORE_BASE64 != ''
+      # مفتاح التوقيع مثبّت داخل المستودع (signing/app-signing.keystore) فلا
+      # يعتمد على كاش ولا على إعداد خارجي — نفس البصمة في كل بناء، دائماً.
+      #
+      # Secret اسمه ANDROID_KEYSTORE_BASE64 يُقبل فقط إذا كان صالحاً ومطابقاً
+      # لـ FINGERPRINT.txt. أي Secret تالف أو قديم يُتجاهَل تلقائياً مع تحذير،
+      # بدل أن يكسر البناء أو — الأسوأ — يُنتج APK بتوقيع مختلف.
+      - name: Install signing keystore
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
           mkdir -p ~/.android
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > ~/.android/debug.keystore
-          echo "source=secret" >> "$GITHUB_OUTPUT"
+          EXPECTED="$(tr -d '[:space:]' < signing/FINGERPRINT.txt)"
 
-      - name: Restore keystore from cache (fallback)
-        id: keystore_cache
-        if: steps.keystore_secret.outputs.source != 'secret'
-        uses: actions/cache@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: android-debug-keystore-v1
+          fingerprint_of() {
+            keytool -list -v -keystore "$1" -storepass android 2>/dev/null \
+              | grep 'SHA256:' | head -1 | sed 's/.*SHA256: *//' | tr -d '[:space:]'
+          }
 
-      - name: Generate keystore if none exists
-        if: steps.keystore_secret.outputs.source != 'secret' && steps.keystore_cache.outputs.cache-hit != 'true'
+          USE_REPO_KEY=1
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "وُجد Secret باسم ANDROID_KEYSTORE_BASE64 — جارٍ التحقق منه..."
+            if echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > /tmp/secret.keystore 2>/dev/null \
+               && [ -s /tmp/secret.keystore ] \
+               && [ "$(fingerprint_of /tmp/secret.keystore)" = "$EXPECTED" ]; then
+              cp /tmp/secret.keystore ~/.android/debug.keystore
+              USE_REPO_KEY=0
+              echo "✅ مصدر المفتاح: Secret (صالح ومطابق للبصمة)"
+            else
+              echo "::warning::الـ Secret المسمّى ANDROID_KEYSTORE_BASE64 تالف أو بصمته مختلفة — تم تجاهله."
+              echo "::warning::يُستحسن حذفه من: Settings ← Secrets and variables ← Actions"
+            fi
+            rm -f /tmp/secret.keystore
+          fi
+
+          if [ "$USE_REPO_KEY" = "1" ]; then
+            cp signing/app-signing.keystore ~/.android/debug.keystore
+            echo "✅ مصدر المفتاح: المستودع (signing/app-signing.keystore)"
+          fi
+
+      # فحص مبكر للمفتاح — رسالة خطأ أوضح قبل قضاء 10 دقائق في البناء.
+      - name: Sanity-check keystore fingerprint
         run: |
-          mkdir -p ~/.android
-          keytool -genkeypair -v \
-            -keystore ~/.android/debug.keystore \
-            -storepass android -keypass android \
-            -alias androiddebugkey \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
-
-      - name: Export keystore as artifact (so you can save it as a secret)
-        if: steps.keystore_secret.outputs.source != 'secret'
-        run: |
-          base64 -w0 ~/.android/debug.keystore > /tmp/keystore.b64
-          echo "::warning::keystore ليس في Secret. حمّل الـ artifact 'debug-keystore-base64' وضع محتواه في Secret اسمه ANDROID_KEYSTORE_BASE64 لضمان التحديث الدائم."
-
-      - name: Upload keystore artifact (one-time bootstrap)
-        if: steps.keystore_secret.outputs.source != 'secret'
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-keystore-base64
-          path: /tmp/keystore.b64
-          retention-days: 90
+          EXPECTED="$(tr -d '[:space:]' < signing/FINGERPRINT.txt)"
+          ACTUAL="$(keytool -list -v -keystore ~/.android/debug.keystore -storepass android \
+                    | grep 'SHA256:' | head -1 | sed 's/.*SHA256: *//' | tr -d '[:space:]')"
+          echo "المتوقّع: $EXPECTED"
+          echo "الفعلي  : $ACTUAL"
+          [ "$EXPECTED" = "$ACTUAL" ] || {
+            echo "::error::مفتاح التوقيع لا يطابق signing/FINGERPRINT.txt"
+            exit 1
+          }
 
 
       - name: Cache npm store
@@ -128,6 +134,8 @@ jobs:
         run: npm run build
 
       - name: Add Android platform + patch manifest
+        env:
+          SKIP_WEB_BUILD: "1"   # الحزمة مبنية في الخطوة السابقة — لا تبنِها مرتين
         run: node scripts/prepare-android.mjs
 
       - name: Grant gradlew permission
@@ -136,6 +144,29 @@ jobs:
       - name: Build Debug APK
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon
+
+      # الحارس الحقيقي: يفحص شهادة الـ APK المبني نفسه — وهي ما يقارنه أندرويد
+      # عند التحديث. فحص المفتاح وحده لا يكفي: الإصدارات ١١ و٣٠ و٤٢ و٤٩ خرجت
+      # بأربع شهادات مختلفة رغم أن الوركفلو كان ينسخ مفتاحاً إلى نفس المسار.
+      - name: Verify APK signing certificate
+        run: |
+          APK=android/app/build/outputs/apk/debug/app-debug.apk
+          APKSIGNER="$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)"
+          echo "apksigner: $APKSIGNER"
+
+          norm() { tr 'A-F' 'a-f' | tr -d ': \t\r\n'; }
+          EXPECTED="$(norm < signing/FINGERPRINT.txt)"
+          ACTUAL="$("$APKSIGNER" verify --print-certs "$APK" \
+                    | grep -i 'SHA-256 digest' | head -1 | sed 's/.*: *//' | norm)"
+
+          echo "المتوقّع: $EXPECTED"
+          echo "الفعلي  : $ACTUAL"
+          if [ -z "$ACTUAL" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::شهادة الـ APK لا تطابق المتوقّع — لن يُنشر."
+            echo "::error::تثبيت هذا الملف كان سيفشل على كل جهاز عليه نسخة سابقة."
+            exit 1
+          fi
+          echo "✅ شهادة الـ APK مطابقة — التحديث داخل التطبيق سيعمل."
 
       - name: Rename APK with version
         run: |

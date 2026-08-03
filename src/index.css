@@ -81,6 +81,24 @@
     touch-action: pan-x pan-y;
   }
 
+  /* Text selection, drag-to-save and the long-press callout are browser
+     affordances. In an app they read as bugs, so only inputs keep them. */
+  * {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  input,
+  textarea,
+  [contenteditable="true"] {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  img {
+    -webkit-user-drag: none;
+    user-drag: none;
+  }
+
   /* Zero 300ms tap delay + crisp taps on all interactive elements */
   button,
   a,
@@ -132,38 +150,21 @@
 }
 
 @layer utilities {
-  /* CSS-columns masonry */
-  .masonry {
-    column-gap: 0.25rem;
-    width: 100%;
-    box-sizing: border-box;
-    direction: ltr;
-  }
-  .masonry > * { width: 100%; }
-  .masonry-col-2 { column-count: 2; }
-  .masonry-col-3 { column-count: 3; }
-  .masonry-col-4 { column-count: 4; }
-  .masonry-col-5 { column-count: 5; }
-  .masonry-col-6 { column-count: 6; }
-  .masonry-col-7 { column-count: 7; }
-  .masonry-col-8 { column-count: 8; }
-  .masonry-col-9 { column-count: 9; }
-  .masonry-col-10 { column-count: 10; }
-  .masonry-col-12 { column-count: 12; }
+  /* A native app has no visible scrollbar. */
+  ::-webkit-scrollbar { width: 0; height: 0; }
 
-  .masonry-item {
-    break-inside: avoid;
-    margin-bottom: 0.25rem;
-    display: block;
+  /* Every tappable surface should answer the finger immediately. */
+  .press {
+    transition: transform 120ms cubic-bezier(0.2, 0, 0, 1), opacity 120ms;
+    -webkit-user-select: none;
+    user-select: none;
   }
+  .press:active { transform: scale(0.94); }
+  .press:disabled:active { transform: none; }
 
-  /* Hide scrollbar but keep scrollability */
-  .scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
-  .scrollbar-thin::-webkit-scrollbar-thumb {
-    background: hsl(var(--muted));
-    border-radius: 8px;
+  @media (prefers-reduced-motion: reduce) {
+    .press:active { transform: none; }
   }
-  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
 }
 
 /* ---- View Transitions API — Shared Element morph between grid & lightbox ---- */

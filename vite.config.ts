@@ -2,15 +2,13 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import { readFileSync } from "node:fs";
-import { componentTagger } from "lovable-tagger";
-import { mcpPlugin } from "@lovable.dev/mcp-js/stacks/supabase/vite";
 import { VitePWA } from "vite-plugin-pwa";
 
 const pkg = JSON.parse(readFileSync(path.resolve(__dirname, "package.json"), "utf8"));
 
 
 // https://vitejs.dev/config/
-export default defineConfig(({ mode }) => ({
+export default defineConfig(() => ({
   server: {
     host: "::",
     port: 8080,
@@ -20,8 +18,6 @@ export default defineConfig(({ mode }) => ({
   },
   plugins: [
     react(),
-    mcpPlugin(),
-    mode === "development" && componentTagger(),
     VitePWA({
       registerType: "autoUpdate",
       injectRegister: null,
@@ -110,7 +106,7 @@ export default defineConfig(({ mode }) => ({
         ],
       },
     }),
-  ].filter(Boolean),
+  ],
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __OTA_REPO__: JSON.stringify(process.env.GITHUB_REPOSITORY || process.env.VITE_OTA_REPO || ""),

@@ -1,33 +1,31 @@
 import { useEffect, useState } from "react";
 import { liveQuery } from "dexie";
-import { photoDb, type MediaAsset, type ProviderKind } from "@/lib/photoDb";
+import { photoDb, type MediaAsset } from "@/lib/photoDb";
 
 type Filter =
   | { kind: "unsynced-device" }
   | { kind: "telegram-remote" }
-  | { kind: "provider"; provider: ProviderKind }
   | { kind: "all" };
 
+/** Live view of the asset table, newest first. */
 export function useMediaAssets(filter: Filter = { kind: "all" }): MediaAsset[] {
   const [assets, setAssets] = useState<MediaAsset[]>([]);
+  const kind = filter.kind;
+
   useEffect(() => {
     const sub = liveQuery(async () => {
       const rows = await photoDb.assets.orderBy("date").reverse().toArray();
-      switch (filter.kind) {
+      switch (kind) {
         case "unsynced-device":
           return rows.filter((r) => r.provider === "device" && r.syncedAt == null);
         case "telegram-remote":
-          // Show every asset that has a Telegram file id, including photos
-          // uploaded by older app versions that kept provider="device" after sync.
-          return rows.filter((r) => r.provider === "telegram-remote" || !!r.remoteFileId);
-        case "provider":
-          return rows.filter((r) => r.provider === filter.provider);
+          return rows.filter((r) => r.remoteMessageId != null);
         default:
           return rows;
       }
     }).subscribe({ next: setAssets });
     return () => sub.unsubscribe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter.kind, (filter as { provider?: string }).provider]);
+  }, [kind]);
+
   return assets;
 }

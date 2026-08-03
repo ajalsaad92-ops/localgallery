@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Download, ExternalLink, X } from "lucide-react";
 import { toast } from "sonner";
-import type { MockPhoto } from "@/lib/mockPhotos";
+import type { GalleryItem } from "@/lib/galleryItem";
 import { cn } from "@/lib/utils";
 import { ZoomableImage } from "./ZoomableImage";
 import { runViewTransition } from "@/lib/viewTransition";
@@ -11,7 +11,7 @@ import { isHeic, heicUrlToJpegUrl } from "@/lib/heic";
 
 
 interface LightboxProps {
-  photos: MockPhoto[];
+  photos: GalleryItem[];
   index: number;
   onClose: () => void;
   onIndexChange: (i: number) => void;

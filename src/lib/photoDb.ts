@@ -1,16 +1,9 @@
 // Local-only metadata storage (IndexedDB via Dexie).
-// Nothing is sent to any server except the user's Telegram bot.
+// Nothing leaves the device except uploads to the user's own Telegram account.
 import Dexie, { type Table } from "dexie";
 import type { ExifData } from "./exif";
 
-export type ProviderKind = "device" | "telegram" | "telegram-remote";
-
-export interface ProviderConfig {
-  kind: ProviderKind;
-  configured: boolean;
-  botToken?: string;
-  chatId?: string;
-}
+export type ProviderKind = "device" | "telegram-remote";
 
 export interface MediaAsset {
   id: string;
@@ -26,21 +19,16 @@ export interface MediaAsset {
   kind?: "image" | "video";
   duration?: number;
   posterDataUrl?: string;
-  /** Original blob when imported from the device. Removed once synced to save space. */
+  /** Original blob when imported through the browser file picker. */
   blob?: Blob;
-  /** Native MediaStore/WebView URL for device media. Metadata only; media bytes stay in the phone gallery. */
+  /** Native MediaStore URL. Metadata only — bytes stay in the phone gallery. */
   localUri?: string;
-  /** Telegram fileId once uploaded / when discovered in the remote feed. */
-  remoteFileId?: string;
+  /** Stable content signature used to avoid uploading the same file twice. */
+  contentKey?: string;
   remoteMessageId?: number;
-  /** Channel/group id the message lives in (MTProto user-account mode). */
+  /** Channel/group id the message lives in. */
   remoteChatId?: string;
-  remoteFilePath?: string;
-
-  /** Small JPEG thumbnail Telegram serves for HEIC/RAW documents and videos. */
-  thumbFileId?: string;
-  thumbFilePath?: string;
-  /** Set when the local device asset has been successfully uploaded to Telegram. */
+  /** Set once the local asset has been uploaded successfully. */
   syncedAt?: number;
 }
 
@@ -56,28 +44,32 @@ export interface SyncSettings {
   wifiOnly: boolean;
   maxFileMb: number;
   paused: boolean;
-  /** When true, the local blob is dropped from IndexedDB right after a successful upload. */
+  /** Drop the local blob from IndexedDB right after a successful upload. */
   freeBlobAfterSync: boolean;
 }
 
+/**
+ * Telegram accepts up to 2 GB per file, but the upload path has to hold the
+ * bytes in memory and an Android WebView is killed long before that. 400 MB is
+ * the largest size that still survives reliably on a mid-range phone.
+ */
+export const MAX_UPLOAD_MB = 400;
+
 export const DEFAULT_SYNC_SETTINGS: SyncSettings = {
-  mode: "manual",
+  mode: "auto",
   wifiOnly: true,
-  // 0 = unlimited. Telegram itself may still reject files above its Bot API limit.
-  maxFileMb: 0,
-  paused: true,
+  maxFileMb: MAX_UPLOAD_MB,
+  paused: false,
   freeBlobAfterSync: true,
 };
 
 class PhotoDatabase extends Dexie {
-  providers!: Table<ProviderConfig, ProviderKind>;
   assets!: Table<MediaAsset, string>;
   kv!: Table<KV, string>;
 
   constructor() {
     super("localgallery-pro");
-    // Keep old versions so users upgrading don't hit a schema-mismatch error.
-    // Only the latest version is used by the app.
+    // Old versions are kept so upgrading users don't hit a schema mismatch.
     this.version(1).stores({ states: "id, favorite, archived, trashedAt" });
     this.version(11).stores({
       states: "id, favorite, archived, trashedAt, importedAt, locked",
@@ -93,22 +85,47 @@ class PhotoDatabase extends Dexie {
       persons: "id, updatedAt, hidden",
       ocr: "id, updatedAt",
     });
-    // v12: strip everything except providers/assets/kv, add syncedAt index.
     this.version(12).stores({
-      states: null,
-      topicRules: null,
-      syncJobs: null,
-      albums: null,
-      albumMembers: null,
-      embeddings: null,
-      faces: null,
-      persons: null,
-      ocr: null,
+      states: null, topicRules: null, syncJobs: null, albums: null,
+      albumMembers: null, embeddings: null, faces: null, persons: null, ocr: null,
       providers: "kind, configured",
       assets: "id, provider, date, syncedAt, remoteFileId",
       kv: "key",
     });
+    // v13: the Telegram bot path is gone — drop the providers table, and index
+    // assets by contentKey so duplicate detection is a lookup, not a full scan.
+    this.version(13)
+      .stores({
+        providers: null,
+        assets: "id, provider, date, syncedAt, contentKey, remoteMessageId",
+        kv: "key",
+      })
+      .upgrade(async (tx) => {
+        const assets = tx.table("assets");
+        // Bot-era remote rows are addressed by a bot file_id the app can no
+        // longer resolve. Drop them; the channel re-import repopulates them.
+        const stale = await assets
+          .filter(
+            (a: MediaAsset) =>
+              a.provider === "telegram-remote" && a.remoteMessageId == null,
+          )
+          .primaryKeys();
+        if (stale.length) await assets.bulkDelete(stale);
+
+        // Backfill the content key for everything that survived.
+        await assets.toCollection().modify((a: MediaAsset) => {
+          if (!a.contentKey) a.contentKey = contentKeyOf(a);
+        });
+      });
   }
 }
 
 export const photoDb = new PhotoDatabase();
+
+/**
+ * Stable identity for a file, independent of its MediaStore id.
+ * Name + size alone collide on screenshots, so the capture date is included.
+ */
+export function contentKeyOf(a: { name: string; size: number; date?: number }): string {
+  return `${a.name}|${a.size}|${a.date ?? 0}`;
+}

@@ -4,41 +4,33 @@ const config: CapacitorConfig = {
   appId: 'app.lovable.c24377afd98c4f369655506b4b645da8',
   appName: 'LocalGallery Pro',
   webDir: 'dist',
-  // NOTE: `server.url` is intentionally omitted so the APK loads the bundled
-  // web assets from `dist/` instead of the Lovable preview URL.
-  // For live hot-reload during development, temporarily add:
-  //   server: { url: 'https://<your-preview>.lovableproject.com', cleartext: true }
+  // `server.url` is intentionally omitted so the APK loads the bundled assets
+  // from `dist/` instead of a remote preview URL.
   server: {
     androidScheme: 'https',
-    cleartext: true,
   },
   android: {
-    allowMixedContent: true,
-    backgroundColor: '#0b0b0b',
+    backgroundColor: '#0b0f17',
+    // No pull-to-refresh bounce, no zoom gestures — this is an app, not a page.
+    webContentsDebuggingEnabled: false,
   },
   plugins: {
     SplashScreen: {
-      launchShowDuration: 600,
+      launchShowDuration: 500,
       launchAutoHide: true,
-      backgroundColor: '#000000',
+      backgroundColor: '#0b0f17',
       androidSplashResourceName: 'splash',
       showSpinner: false,
     },
     StatusBar: {
-      // Immersive edge-to-edge — WebView draws behind status bar.
+      // Immersive edge-to-edge — the WebView draws behind the status bar.
       overlaysWebView: true,
       style: 'DARK',
       backgroundColor: '#00000000',
     },
     LocalNotifications: {
       smallIcon: 'ic_stat_icon_config_sample',
-      iconColor: '#8ab4f8',
-    },
-    Camera: {
-      permissions: ['camera', 'photos'],
-    },
-    Media: {
-      androidGalleryMode: true,
+      iconColor: '#ff5722',
     },
   },
 };

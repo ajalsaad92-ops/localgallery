@@ -1,89 +1,101 @@
-// Device gallery import. Native Android builds use a real MediaStore bridge
-// that reads the whole gallery after permission; the OS picker remains only as
-// a browser/native fallback.
+// Device gallery indexing.
+//
+// Only metadata is stored — the bytes stay in the phone's gallery and are read
+// on demand at upload time. The first run walks the whole library; every run
+// after that only asks MediaStore for items newer than the last one seen, so
+// reopening the app is instant no matter how many photos there are.
 import { Capacitor } from "@capacitor/core";
-import { Camera } from "@capacitor/camera";
-import { photoDb, type MediaAsset } from "./photoDb";
+import { photoDb, contentKeyOf, type MediaAsset } from "./photoDb";
 import { extractExif } from "./exif";
-import { extractVideoMeta, isVideoMime } from "./video";
-import { requestGalleryPermission, scanNativeGalleryBatch, type NativeGalleryAsset } from "./native";
-import { logNative, logIdb, mark } from "./diagnostics";
+import { isVideoMime } from "./video";
+import {
+  requestGalleryPermission,
+  scanNativeGalleryBatch,
+  type NativeGalleryAsset,
+} from "./native";
 
 export const canScanDeviceGallery = () => Capacitor.isNativePlatform();
 
-async function uriToFile(webPath: string, fallbackName: string): Promise<File | null> {
-  try {
-    const res = await fetch(webPath);
-    const blob = await res.blob();
-    const ext = (blob.type.split("/")[1] || "jpg").split(";")[0];
-    const name = fallbackName.includes(".") ? fallbackName : `${fallbackName}.${ext}`;
-    return new File([blob], name, { type: blob.type || `image/${ext}`, lastModified: Date.now() });
-  } catch (e) {
-    logNative("scan", "uriToFile failed", { webPath, err: String(e) });
-    return null;
-  }
+const WATERMARK_KEY = "scan:watermark";
+
+async function getWatermark(): Promise<number> {
+  const row = await photoDb.kv.get(WATERMARK_KEY);
+  const n = Number(row?.value ?? 0);
+  return Number.isFinite(n) ? n : 0;
 }
 
-async function insertFileAsset(file: File, id: string, meta?: Partial<NativeGalleryAsset>): Promise<boolean> {
-  if (await photoDb.assets.get(id)) return false;
+async function setWatermark(ms: number) {
+  await photoDb.kv.put({ key: WATERMARK_KEY, value: String(ms) });
+}
 
-  const isVideo = meta?.kind === "video" || isVideoMime(file.type);
-  let width = meta?.width;
-  let height = meta?.height;
-  let dateTaken = meta?.date || file.lastModified || Date.now();
-  let posterDataUrl: string | undefined;
-  let duration = meta?.duration;
-  let exif: Awaited<ReturnType<typeof extractExif>> | undefined;
+/** Import files chosen through a browser file input (web builds). */
+export async function importWebFiles(files: File[]): Promise<number> {
+  let inserted = 0;
+  for (const file of files) {
+    const id = `web-${file.size}-${file.lastModified}-${file.name}`;
+    if (await photoDb.assets.get(id)) continue;
 
-  try {
-    if (isVideo) {
-      const m = await extractVideoMeta(file);
-      width = width ?? m.width;
-      height = height ?? m.height;
-      duration = duration ?? m.duration;
-      posterDataUrl = m.posterDataUrl;
-    } else if (!width || !height) {
-      exif = await extractExif(file);
-      width = exif.width;
-      height = exif.height;
-      dateTaken = exif.dateTaken ?? dateTaken;
+    const isVideo = isVideoMime(file.type);
+    let width: number | undefined;
+    let height: number | undefined;
+    let date = file.lastModified || Date.now();
+    let posterDataUrl: string | undefined;
+    let duration: number | undefined;
+
+    try {
+      if (isVideo) {
+        const { extractVideoMeta } = await import("./video");
+        const m = await extractVideoMeta(file);
+        width = m.width; height = m.height;
+        duration = m.duration; posterDataUrl = m.posterDataUrl;
+      } else {
+        const exif = await extractExif(file);
+        width = exif.width; height = exif.height;
+        date = exif.dateTaken ?? date;
+      }
+    } catch {
+      /* metadata is optional — the file must still import */
     }
-  } catch {
-    /* metadata is optional — the file must still import */
+
+    const asset: MediaAsset = {
+      id,
+      provider: "device",
+      name: file.name,
+      size: file.size,
+      mime: file.type || (isVideo ? "video/*" : "image/*"),
+      width, height,
+      date,
+      createdAt: Date.now(),
+      kind: isVideo ? "video" : "image",
+      blob: file,
+      contentKey: contentKeyOf({ name: file.name, size: file.size, date }),
+      ...(posterDataUrl ? { posterDataUrl } : {}),
+      ...(duration ? { duration } : {}),
+    };
+    await photoDb.assets.put(asset);
+    inserted++;
   }
-
-  const asset: MediaAsset = {
-    id,
-    provider: "device",
-    name: file.name,
-    size: file.size,
-    mime: file.type || meta?.mime || (isVideo ? "video/*" : "image/*"),
-    width,
-    height,
-    date: dateTaken,
-    createdAt: Date.now(),
-    kind: isVideo ? "video" : "image",
-    blob: file,
-    ...(posterDataUrl ? { posterDataUrl } : {}),
-    ...(duration ? { duration } : {}),
-    ...(exif ? { exif } : {}),
-  };
-
-  await photoDb.assets.put(asset);
-  return true;
+  return inserted;
 }
 
-async function insertNativeAsset(item: NativeGalleryAsset): Promise<boolean> {
+/** Insert one MediaStore row, skipping anything already indexed or uploaded. */
+async function insertNativeAsset(
+  item: NativeGalleryAsset,
+  knownKeys: Set<string>,
+): Promise<boolean> {
   const id = `device-${item.id}`;
-  if (await photoDb.assets.get(id)) return false;
-  // Content-level dedupe: the same photo can reappear with a new MediaStore id
-  // (re-import, restored backup, moved folder). Never index/upload it twice.
-  if (item.date) {
-    const sameDay = await photoDb.assets.where("date").equals(item.date).toArray();
-    if (sameDay.some((a) => a.name === item.name && a.size === item.size)) return false;
+  const date = item.date || Date.now();
+  const key = contentKeyOf({ name: item.name, size: item.size, date });
+
+  // The same photo reappears with a fresh MediaStore id after a restore or a
+  // folder move. Never index — or re-upload — it twice.
+  if (knownKeys.has(key)) return false;
+  if (await photoDb.assets.get(id)) {
+    knownKeys.add(key);
+    return false;
   }
 
-  const asset: MediaAsset = {
+  await photoDb.assets.put({
     id,
     provider: "device",
     name: item.name,
@@ -91,106 +103,64 @@ async function insertNativeAsset(item: NativeGalleryAsset): Promise<boolean> {
     mime: item.mime || (item.kind === "video" ? "video/*" : "image/*"),
     width: item.width,
     height: item.height,
-    date: item.date || Date.now(),
+    date,
     createdAt: Date.now(),
     kind: item.kind,
     duration: item.duration,
     localUri: item.webPath,
-  };
-  await photoDb.assets.put(asset);
+    contentKey: key,
+  });
+  knownKeys.add(key);
   return true;
 }
 
-async function importNativeGallery(onProgress?: (done: number, total: number) => void, max = 0): Promise<{ inserted: number; total: number }> {
-  const batchSize = 60;
-  let offset = 0;
-  let inserted = 0;
-  let total = 0;
-
-  while (max === 0 || offset < max) {
-    const limit = max > 0 ? Math.min(batchSize, max - offset) : batchSize;
-    const batch = await scanNativeGalleryBatch(offset, limit);
-    const items = batch.items ?? [];
-    total = batch.total ?? Math.max(total, offset + items.length);
-    if (items.length === 0) break;
-
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      onProgress?.(Math.min(offset + i, total), total);
-      const imported = await insertNativeAsset(item);
-      if (imported) inserted++;
-    }
-
-    offset += items.length;
-    if (items.length < limit) break;
-  }
-
-  onProgress?.(total, total);
-  return { inserted, total };
-}
+let scanning = false;
 
 /**
- * Opens the OS gallery multi-select. `limit: 0` means unlimited on Android/iOS.
- * Every selected item is imported as a MediaAsset with its blob persisted in
- * IndexedDB, so it renders in the gallery immediately and survives reloads.
+ * Index the device gallery.
+ *
+ * @param onProgress called with the number of items indexed so far
+ * @param full      ignore the watermark and re-walk the entire library
  */
 export async function scanDeviceGallery(
-  onProgress?: (done: number, total: number) => void,
-  max = 0,
+  onProgress?: (indexed: number) => void,
+  full = false,
 ): Promise<number> {
-  if (!canScanDeviceGallery()) return 0;
-  const t = mark();
-  logNative("scan", "device gallery import start");
+  if (!canScanDeviceGallery() || scanning) return 0;
+  if (!(await requestGalleryPermission().catch(() => false))) return 0;
 
-  const granted = await requestGalleryPermission().catch(() => false);
-  if (!granted) {
-    logNative("scan", "gallery permission not granted — abort");
-    return 0;
-  }
-
-  let picked: { webPath?: string; format?: string; path?: string }[] = [];
+  scanning = true;
   try {
-    try {
-      const nativeResult = await importNativeGallery(onProgress, max);
-      logNative("scan", "native full-gallery import complete", nativeResult);
-      if (nativeResult.total > 0) {
-        if (nativeResult.inserted > 0) logIdb("assets", `inserted ${nativeResult.inserted} native gallery assets`);
-        return nativeResult.inserted;
+    const since = full ? 0 : await getWatermark();
+    // One lookup instead of a per-item scan.
+    const knownKeys = new Set(
+      (await photoDb.assets.toArray()).map((a) => a.contentKey ?? contentKeyOf(a)),
+    );
+
+    const PAGE = 200;
+    let offset = 0;
+    let inserted = 0;
+    let newestSeen = since;
+
+    for (;;) {
+      const batch = await scanNativeGalleryBatch(offset, PAGE, since);
+      const items = batch.items ?? [];
+      if (items.length === 0) break;
+
+      for (const item of items) {
+        if (item.date > newestSeen) newestSeen = item.date;
+        if (await insertNativeAsset(item, knownKeys)) inserted++;
       }
-    } catch (e) {
-      logNative("scan", "native full-gallery import failed; falling back to picker", e);
+      onProgress?.(inserted);
+
+      offset += items.length;
+      if (items.length < PAGE) break;
     }
 
-    const res = await Camera.pickImages({ quality: 92, limit: max });
-    picked = res.photos ?? [];
-  } catch (e) {
-    logNative("scan", "pickImages failed", e);
-    return 0;
+    // Rewind a minute so an item written during the scan isn't missed.
+    if (newestSeen > 0) await setWatermark(Math.max(0, newestSeen - 60_000));
+    return inserted;
+  } finally {
+    scanning = false;
   }
-
-  const total = picked.length;
-  logNative("scan", `user selected ${total} items`);
-  let inserted = 0;
-
-  for (let i = 0; i < picked.length; i++) {
-    const p = picked[i];
-    onProgress?.(i, total);
-    if (!p.webPath) continue;
-    const name = p.path?.split("/").pop() ?? `photo-${Date.now()}-${i}.${p.format ?? "jpg"}`;
-    const file = await uriToFile(p.webPath, name);
-    if (!file) continue;
-
-    const id = `device-${file.size}-${file.lastModified}-${file.name}`;
-    if (await insertFileAsset(file, id)) inserted++;
-  }
-
-  onProgress?.(total, total);
-  logNative("scan", "import complete", { ms: t(), inserted, total });
-  if (inserted > 0) logIdb("assets", `inserted ${inserted} device assets`);
-  return inserted;
-}
-
-/** No-op on this build — device assets already carry their blob. */
-export async function resolveDeviceMedia(): Promise<string | null> {
-  return null;
 }

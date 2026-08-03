@@ -1,11 +1,12 @@
 import { Cloud, Settings as SettingsIcon, UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { tap } from "@/lib/native";
 
 export type Tab = "sync" | "telegram" | "settings";
 
 const TABS: { id: Tab; label: string; icon: typeof UploadCloud }[] = [
   { id: "sync", label: "مزامنة", icon: UploadCloud },
-  { id: "telegram", label: "عرض", icon: Cloud },
+  { id: "telegram", label: "معرضي", icon: Cloud },
   { id: "settings", label: "ضبط", icon: SettingsIcon },
 ];
 
@@ -24,15 +25,20 @@ export function MobileNav({ active, onChange }: MobileNavProps) {
           return (
             <button
               key={t.id}
-              onClick={() => onChange(t.id)}
+              onClick={() => {
+                if (on) return;
+                void tap("light");
+                onChange(t.id);
+              }}
+              aria-current={on ? "page" : undefined}
               className={cn(
-                "relative flex flex-1 items-center justify-center gap-2 rounded-full px-3 py-2.5 text-[13px] font-extrabold transition-all duration-200",
+                "press relative flex flex-1 items-center justify-center gap-2 rounded-full px-3 py-2.5 text-[13px] font-extrabold",
                 on
                   ? "bg-hot text-primary-foreground shadow-[var(--shadow-fab)]"
-                  : "text-muted-foreground active:scale-95",
+                  : "text-muted-foreground",
               )}
             >
-              <Icon className={cn("h-[18px] w-[18px]", on && "scale-110")} />
+              <Icon className={cn("h-[18px] w-[18px] transition-transform", on && "scale-110")} />
               {t.label}
             </button>
           );

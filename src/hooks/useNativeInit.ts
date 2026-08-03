@@ -6,59 +6,47 @@ import { Network } from "@capacitor/network";
 import { isNative } from "@/lib/native";
 import { runSyncCycle } from "@/lib/syncEngine";
 import { canScanDeviceGallery, scanDeviceGallery } from "@/lib/deviceMedia";
-import { logNative, logTimeline } from "@/lib/diagnostics";
 
-/** Full-gallery indexing, at most once per app session, never blocking the UI. */
-let scanning = false;
-async function backgroundScan() {
-  if (scanning || !canScanDeviceGallery()) return;
-  scanning = true;
+/**
+ * Index newly added photos, then upload whatever that turned up.
+ * The scan itself is incremental — MediaStore is only asked for items newer
+ * than the last one seen, so this stays cheap on a 20k-photo library.
+ */
+async function catchUp() {
+  if (!canScanDeviceGallery()) return;
   try {
     const inserted = await scanDeviceGallery();
-    logNative("scan", `background gallery scan done (+${inserted})`);
-    if (inserted > 0) void runSyncCycle().catch(() => undefined);
-  } catch (e) {
-    logNative("scan", "background gallery scan failed", e);
-  } finally {
-    scanning = false;
+    if (inserted > 0) await runSyncCycle();
+  } catch {
+    /* a failed scan must never break the app */
   }
 }
-
 
 export function useNativeInit() {
   useEffect(() => {
     if (!isNative()) return;
-    logTimeline("native", "init begin");
 
     void (async () => {
-      try {
-        await StatusBar.setOverlaysWebView({ overlay: true }).catch(() => undefined);
-        await StatusBar.setStyle({ style: Style.Dark }).catch(() => undefined);
-        await StatusBar.setBackgroundColor({ color: "#00000000" }).catch(() => undefined);
-      } catch { /* ignore */ }
+      await StatusBar.setOverlaysWebView({ overlay: true }).catch(() => undefined);
+      await StatusBar.setStyle({ style: Style.Dark }).catch(() => undefined);
+      await StatusBar.setBackgroundColor({ color: "#00000000" }).catch(() => undefined);
       void SplashScreen.hide({ fadeOutDuration: 250 }).catch(() => undefined);
     })();
 
-    const runSync = () => { void runSyncCycle().catch(() => undefined); };
-
-    // Index the whole device gallery in the background shortly after launch.
-    const scanTimer = window.setTimeout(() => { void backgroundScan(); }, 1500);
+    const first = window.setTimeout(() => { void catchUp(); }, 800);
 
     const appSub = App.addListener("appStateChange", (s) => {
-      logNative("app", `state ${s.isActive ? "active" : "background"}`);
-      if (s.isActive) { runSync(); void backgroundScan(); }
+      if (s.isActive) void catchUp();
     });
 
     const netSub = Network.addListener("networkStatusChange", (s) => {
-      logNative("network", `${s.connected ? "online" : "offline"} (${s.connectionType})`);
-      if (s.connected) runSync();
+      if (s.connected) void runSyncCycle();
     });
 
     return () => {
-      window.clearTimeout(scanTimer);
+      window.clearTimeout(first);
       void appSub.then((h) => h.remove()).catch(() => undefined);
       void netSub.then((h) => h.remove()).catch(() => undefined);
     };
-
   }, []);
 }

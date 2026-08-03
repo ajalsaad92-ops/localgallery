@@ -3,8 +3,7 @@
  * Nothing is sent anywhere except Telegram's own servers.
  * The session string is stored locally in IndexedDB (kv table).
  */
-import { photoDb } from "@/lib/photoDb";
-import { logTg } from "@/lib/diagnostics";
+import { photoDb, MAX_UPLOAD_MB } from "@/lib/photoDb";
 import { resolveOriginalDate } from "@/lib/captionMeta";
 
 
@@ -235,12 +234,26 @@ async function resolveEntity(client: any, target: MtTarget): Promise<any> {
   }
 }
 
-/** Upload a file straight from the user account (no bot, up to 2GB). */
+/**
+ * Upload a file straight from the user account.
+ *
+ * gramjs buffers the whole file in memory before sending, so the practical
+ * ceiling is the WebView's heap, not Telegram's 2 GB limit. Anything above
+ * MAX_UPLOAD_MB is rejected up front with a readable message instead of being
+ * allowed to kill the process mid-upload.
+ */
 export async function uploadToTarget(
   file: File,
   onProgress?: (fraction: number) => void,
   caption?: string,
 ): Promise<{ messageId: number; chatId: string }> {
+  const limit = MAX_UPLOAD_MB * 1024 * 1024;
+  if (file.size > limit) {
+    throw new Error(
+      `الملف ${Math.round(file.size / 1048576)} م.ب — الحد الأقصى ${MAX_UPLOAD_MB} م.ب`,
+    );
+  }
+
   const client = await getClient();
   if (!client) throw new Error("لم يتم ربط الحساب الشخصي بعد");
   const target = await getSavedTarget();
@@ -249,30 +262,23 @@ export async function uploadToTarget(
   const c = client as any;
   const entity = await resolveEntity(c, target);
   const big = file.size > 10 * 1024 * 1024;
-  logTg("upload", `sendFile → ${target.title}`, { name: file.name, mime: file.type, bytes: file.size });
-  try {
-    // gramjs in the browser rejects plain File objects ("Cannot use [object
-    // File] as file") — wrap the bytes in a CustomFile instead.
-    const { CustomFile } = await import("telegram/client/uploads");
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const custom = new CustomFile(file.name, bytes.length, file.name, bytes as unknown as Buffer);
-    const msg = await c.sendFile(entity, {
-      file: custom,
-      forceDocument: true,
-      // Caption carries the original capture timestamp so the gallery can show
-      // the real date instead of the Telegram upload date.
-      caption,
-      // More workers keep large videos from stalling on a single connection.
-      workers: big ? 4 : 1,
-      progressCallback: onProgress ? (p: number) => onProgress(p) : undefined,
-    });
-    logTg("upload", `sendFile ok`, { name: file.name, messageId: Number(msg.id) });
-    return { messageId: Number(msg.id), chatId: target.id };
-  } catch (e) {
-    logTg("upload", `sendFile failed: ${file.name}`, e, "error");
-    throw e;
-  }
 
+  // gramjs in the browser rejects plain File objects ("Cannot use [object
+  // File] as file") — wrap the bytes in a CustomFile instead.
+  const { CustomFile } = await import("telegram/client/uploads");
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const custom = new CustomFile(file.name, bytes.length, file.name, bytes as unknown as Buffer);
+  const msg = await c.sendFile(entity, {
+    file: custom,
+    forceDocument: true,
+    // Caption carries the original capture timestamp so the gallery can show
+    // the real date instead of the Telegram upload date.
+    caption,
+    // More workers keep large videos from stalling on a single connection.
+    workers: big ? 4 : 1,
+    progressCallback: onProgress ? (p: number) => onProgress(p) : undefined,
+  });
+  return { messageId: Number(msg.id), chatId: target.id };
 }
 
 
@@ -327,14 +333,13 @@ export async function fetchChannelMedia(
   onItem?: (item: MtMediaItem) => Promise<void> | void,
 ): Promise<number> {
   const client = await getClient();
-  if (!client) { logTg("feed", "no linked account", undefined, "warn"); throw new Error("لم يتم ربط الحساب الشخصي بعد"); }
+  if (!client) throw new Error("لم يتم ربط الحساب الشخصي بعد");
   const target = await getSavedTarget();
-  if (!target) { logTg("feed", "no target channel selected", undefined, "warn"); throw new Error("اختر قناة الحفظ أولاً"); }
+  if (!target) throw new Error("اختر قناة الحفظ أولاً");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const c = client as any;
   // limit <= 0 means "read the whole channel".
   const cap = limit && limit > 0 ? limit : Number.MAX_SAFE_INTEGER;
-  logTg("feed", `reading history of "${target.title}"`, { id: target.id, limit: cap });
   const entity = await resolveEntity(c, target);
 
   let count = 0;
@@ -397,7 +402,7 @@ export async function fetchChannelMedia(
     };
 
     try { await onItem?.(item); count++; }
-    catch (e) { logTg("feed", `store failed for msg ${m.id}`, e, "error"); }
+    catch { /* one bad message must not abort the import */ }
   };
 
   // Page manually from newest to oldest: one getMessages call caps out and
@@ -414,13 +419,8 @@ export async function fetchChannelMedia(
     const lastId = Number(page[page.length - 1].id);
     if (!Number.isFinite(lastId) || lastId <= 1 || lastId === offsetId) break;
     offsetId = lastId;
-    logTg("feed", `page done`, { scanned, imported: count, offsetId });
   }
 
-  if (scanned === 0) {
-    logTg("feed", "channel returned no messages — check the selected channel", { id: target.id }, "warn");
-  }
-  logTg("feed", "history read complete", { scanned, imported: count, skippedNoMedia, skippedMime });
   return count;
 }
 
@@ -451,7 +451,6 @@ export async function fetchMessageThumb(messageId: number): Promise<string | nul
       if (buf && buf.length) return toDataUrl(new Uint8Array(buf));
     } catch { /* next size */ }
   }
-  logTg("feed", `no thumbnail for msg ${messageId}`, undefined, "warn");
   return null;
 }
 

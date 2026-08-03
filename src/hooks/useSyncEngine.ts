@@ -1,16 +1,14 @@
 import { useEffect, useState } from "react";
 import { liveQuery } from "dexie";
-import {
-  photoDb,
-  DEFAULT_SYNC_SETTINGS,
-  type SyncSettings,
-} from "@/lib/photoDb";
+import { photoDb, DEFAULT_SYNC_SETTINGS, type SyncSettings } from "@/lib/photoDb";
 import {
   getSyncSettings,
   runSyncCycle,
+  setSyncSettings,
   subscribeSync,
   type SyncProgress,
 } from "@/lib/syncEngine";
+import { LocalGalleryMedia, isNative, setBackgroundSync } from "@/lib/native";
 
 export function useSyncSettings(): SyncSettings {
   const [settings, setSettings] = useState<SyncSettings>(DEFAULT_SYNC_SETTINGS);
@@ -21,8 +19,11 @@ export function useSyncSettings(): SyncSettings {
       next: (raw) => {
         if (!alive) return;
         if (!raw?.value) return setSettings(DEFAULT_SYNC_SETTINGS);
-        try { setSettings({ ...DEFAULT_SYNC_SETTINGS, ...JSON.parse(raw.value) }); }
-        catch { setSettings(DEFAULT_SYNC_SETTINGS); }
+        try {
+          setSettings({ ...DEFAULT_SYNC_SETTINGS, ...JSON.parse(raw.value) });
+        } catch {
+          setSettings(DEFAULT_SYNC_SETTINGS);
+        }
       },
     });
     return () => { alive = false; sub.unsubscribe(); };
@@ -36,22 +37,32 @@ export function useSyncProgress(): SyncProgress {
   return p;
 }
 
-/** Long-lived sync loop. Mount once. */
+/**
+ * The app-wide sync loop. Mount once.
+ *
+ * Foreground timers are only a fallback: the real driver on device is the
+ * native foreground service, which heartbeats through the plugin because the
+ * WebView freezes its own timers as soon as the app leaves the screen.
+ */
 export function useSyncLoop() {
   const settings = useSyncSettings();
+  const autoOn = !settings.paused && settings.mode === "auto";
+
+  // Arm or disarm the resident background watcher to match the setting.
   useEffect(() => {
-    if (settings.paused || settings.mode !== "auto") return;
-    // Trigger when new device assets appear.
+    void setBackgroundSync(autoOn);
+  }, [autoOn]);
+
+  useEffect(() => {
+    if (!autoOn) return;
+    // Kick a cycle when new device assets land.
     const sub = liveQuery(() =>
       photoDb.assets.where("provider").equals("device").count(),
-    ).subscribe({
-      next: () => { void runSyncCycle(); },
-    });
-    // Periodic tick so uploads resume even without new imports (e.g. after
-    // network came back, or a failed cycle left items behind).
+    ).subscribe({ next: () => { void runSyncCycle(); } });
+
     const tick = window.setInterval(() => { void runSyncCycle(); }, 60_000);
     return () => { sub.unsubscribe(); window.clearInterval(tick); };
-  }, [settings.paused, settings.mode]);
+  }, [autoOn]);
 
   useEffect(() => {
     const on = () => void runSyncCycle();
@@ -59,30 +70,30 @@ export function useSyncLoop() {
     return () => window.removeEventListener("online", on);
   }, []);
 
-  // Listen for pause/resume/stop actions coming from the persistent notification.
+  // Commands and the background heartbeat coming from the native service.
   useEffect(() => {
+    if (!isNative()) return;
     let cleanup: (() => void) | null = null;
-    (async () => {
+
+    void (async () => {
       try {
-        const { Capacitor } = await import("@capacitor/core");
-        if (!Capacitor.isNativePlatform()) return;
-        // Reuse the single registration from native.ts — registering the same
-        // plugin name twice makes Capacitor warn and ignore this instance.
-        const { LocalGalleryMedia } = await import("@/lib/native");
-        const handle = await LocalGalleryMedia.addListener("syncCommand", async ({ action }) => {
-          const { setSyncSettings, runSyncCycle } = await import("@/lib/syncEngine");
-          if (action === "pause") await setSyncSettings({ paused: true });
-          else if (action === "resume") { await setSyncSettings({ paused: false }); void runSyncCycle(); }
-          else if (action === "stop") await setSyncSettings({ paused: true });
-          // Heartbeat from the foreground service: JS timers are throttled in
-          // the background, so this is what actually keeps uploads going.
-          else if (action === "tick") void runSyncCycle();
+        const handle = await LocalGalleryMedia.addListener("syncCommand", ({ action }) => {
+          if (action === "pause") void setSyncSettings({ paused: true });
+          else if (action === "stop") void setSyncSettings({ paused: true, mode: "manual" });
+          else if (action === "resume") {
+            void setSyncSettings({ paused: false }).then(() => runSyncCycle());
+          } else if (action === "tick") {
+            // Heartbeat: JS timers are throttled in the background, so this is
+            // what actually keeps the queue moving.
+            void runSyncCycle();
+          }
         });
         cleanup = () => { void handle.remove(); };
-      } catch { /* web / plugin missing */ }
+      } catch {
+        /* plugin missing (web) */
+      }
     })();
-    return () => { cleanup?.(); };
+
+    return () => cleanup?.();
   }, []);
 }
-
-
