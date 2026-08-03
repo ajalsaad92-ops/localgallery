@@ -3,7 +3,7 @@ import { liveQuery } from "dexie";
 import { photoDb, type MediaAsset } from "@/lib/photoDb";
 
 type Filter =
-  | { kind: "unsynced-device" }
+  | { kind: "device" }
   | { kind: "telegram-remote" }
   | { kind: "all" };
 
@@ -16,8 +16,9 @@ export function useMediaAssets(filter: Filter = { kind: "all" }): MediaAsset[] {
     const sub = liveQuery(async () => {
       const rows = await photoDb.assets.orderBy("date").reverse().toArray();
       switch (kind) {
-        case "unsynced-device":
-          return rows.filter((r) => r.provider === "device" && r.syncedAt == null);
+        case "device":
+          // Everything physically on this phone, uploaded or not.
+          return rows.filter((r) => r.provider === "device" || r.localUri || r.blob);
         case "telegram-remote":
           return rows.filter((r) => r.remoteMessageId != null);
         default:

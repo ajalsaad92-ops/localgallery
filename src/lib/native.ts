@@ -34,6 +34,11 @@ interface LocalGalleryMediaPlugin {
     total?: number;
     items: NativeGalleryAsset[];
   }>;
+  getThumbnail(options: { id: string; size?: number }): Promise<{
+    dataUrl: string; width: number; height: number;
+  }>;
+  shareItems(options: { ids: string[]; title?: string }): Promise<{ ok: boolean }>;
+  deleteItems(options: { ids: string[] }): Promise<{ deleted: number }>;
   installApk(options: { url: string }): Promise<{ ok: boolean }>;
   startSyncService(options: { title: string; text: string }): Promise<{ ok: boolean }>;
   updateSyncService(options: {
@@ -81,6 +86,28 @@ export async function checkGalleryPermission(): Promise<"granted" | "denied" | "
 export async function scanNativeGalleryBatch(offset = 0, limit = 200, since = 0) {
   if (!isNative()) return { total: 0, items: [] as NativeGalleryAsset[] };
   return LocalGalleryMedia.scanGallery({ offset, limit, since });
+}
+
+/** Opens the system share sheet (WhatsApp, Telegram, mail…) for gallery items. */
+export async function shareGalleryItems(assetIds: string[], title = "مشاركة"): Promise<boolean> {
+  if (!isNative() || assetIds.length === 0) return false;
+  const ids = assetIds.map((a) => a.replace(/^device-/, ""));
+  try {
+    return !!(await LocalGalleryMedia.shareItems({ ids, title })).ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Asks the OS to delete items; Android 11+ shows its own confirmation. */
+export async function deleteGalleryItems(assetIds: string[]): Promise<number> {
+  if (!isNative() || assetIds.length === 0) return 0;
+  const ids = assetIds.map((a) => a.replace(/^device-/, ""));
+  try {
+    return (await LocalGalleryMedia.deleteItems({ ids })).deleted ?? 0;
+  } catch {
+    return 0;
+  }
 }
 
 export async function installApkFromUrl(url: string): Promise<boolean> {

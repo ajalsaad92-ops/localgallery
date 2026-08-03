@@ -6,6 +6,8 @@ import { Network } from "@capacitor/network";
 import { isNative } from "@/lib/native";
 import { runSyncCycle } from "@/lib/syncEngine";
 import { canScanDeviceGallery, scanDeviceGallery } from "@/lib/deviceMedia";
+import { reconcileDeletions } from "@/lib/pendingDeletes";
+import { toast } from "sonner";
 
 /**
  * Index newly added photos, then upload whatever that turned up.
@@ -36,7 +38,14 @@ export function useNativeInit() {
     const first = window.setTimeout(() => { void catchUp(); }, 800);
 
     const appSub = App.addListener("appStateChange", (s) => {
-      if (s.isActive) void catchUp();
+      if (!s.isActive) return;
+      // Returning to the app is also when the system delete dialog has closed,
+      // so settle any parked deletions before re-indexing.
+      void (async () => {
+        const removed = await reconcileDeletions().catch(() => 0);
+        if (removed > 0) toast.success(`حُذف ${removed} عنصر`);
+        await catchUp();
+      })();
     });
 
     const netSub = Network.addListener("networkStatusChange", (s) => {

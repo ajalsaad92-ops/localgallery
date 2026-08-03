@@ -1,103 +1,168 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Download, ExternalLink, X } from "lucide-react";
+import { Download, Info, Share2, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import type { GalleryItem } from "@/lib/galleryItem";
 import { cn } from "@/lib/utils";
-import { ZoomableImage } from "./ZoomableImage";
 import { runViewTransition } from "@/lib/viewTransition";
 import { pushBackHandler } from "@/lib/backStack";
-import { isNative, saveBlobToDevice, downloadUrlToDevice } from "@/lib/native";
+import {
+  isNative, saveBlobToDevice, downloadUrlToDevice,
+  shareGalleryItems, tap,
+} from "@/lib/native";
 import { isHeic, heicUrlToJpegUrl } from "@/lib/heic";
-
+import { Slide } from "./Slide";
+import { Filmstrip } from "./Filmstrip";
 
 interface LightboxProps {
   photos: GalleryItem[];
   index: number;
   onClose: () => void;
   onIndexChange: (i: number) => void;
-  /** Optional: enables the download button (Telegram viewer). */
+  /** Enables the download button (remote items). */
   showDownload?: boolean;
+  onDelete?: (photo: GalleryItem) => void;
 }
 
+/** Distance, in fractions of the screen, needed to commit a swipe. */
+const COMMIT = 0.22;
+
 /**
- * Full-screen lightbox with:
- * - Horizontal swipe between photos (touch + arrow keys).
- * - Pinch/zoom via ZoomableImage.
- * - Shared-element morph via View Transitions API.
+ * Full-screen viewer.
+ *
+ * Renders the previous and next item alongside the current one and moves the
+ * whole track with the finger, so a half-drag shows half of the neighbour —
+ * the gallery reads as one continuous list instead of isolated pictures.
  */
-export function Lightbox({ photos, index, onClose, onIndexChange, showDownload }: LightboxProps) {
+export function Lightbox({
+  photos, index, onClose, onIndexChange, showDownload, onDelete,
+}: LightboxProps) {
   const photo = photos[index];
-  const [zoomed, setZoomed] = useState(false);
-  const [heicUrl, setHeicUrl] = useState<string | null>(null);
-  const [decoding, setDecoding] = useState(false);
-  const [videoError, setVideoError] = useState(false);
-  const dragRef = useRef<{ startX: number; startY: number; dx: number } | null>(null);
   const [dx, setDx] = useState(0);
+  const [animating, setAnimating] = useState(false);
+  const [chrome, setChrome] = useState(true);
+  const [info, setInfo] = useState(false);
+  const drag = useRef<{ x: number; y: number; active: boolean } | null>(null);
 
+  const go = useCallback(
+    (next: number) => {
+      if (next < 0 || next >= photos.length) return;
+      onIndexChange(next);
+    },
+    [photos.length, onIndexChange],
+  );
 
-  const goto = useCallback((next: number) => {
-    if (next < 0 || next >= photos.length) return;
-    runViewTransition(() => onIndexChange(next));
-  }, [photos.length, onIndexChange]);
+  const close = useCallback(() => runViewTransition(() => onClose()), [onClose]);
 
-  const close = useCallback(() => {
-    runViewTransition(() => onClose());
-  }, [onClose]);
+  useEffect(() => pushBackHandler(() => { close(); return true; }), [close]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") close();
-      else if (e.key === "ArrowLeft") goto(index - 1);
-      else if (e.key === "ArrowRight") goto(index + 1);
+      else if (e.key === "ArrowLeft") go(index + 1);
+      else if (e.key === "ArrowRight") go(index - 1);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [index, goto, close]);
+  }, [index, go, close]);
 
-  useEffect(() => { setDx(0); setVideoError(false); }, [index]);
+  useEffect(() => { setDx(0); setInfo(false); }, [index]);
 
-  // Android hardware back closes the lightbox instead of exiting the tab.
-  useEffect(() => pushBackHandler(() => { close(); return true; }), [close]);
-
-  const onTouchStart = (e: React.TouchEvent) => {
-    if (zoomed || e.touches.length !== 1) return;
-    dragRef.current = { startX: e.touches[0].clientX, startY: e.touches[0].clientY, dx: 0 };
+  // ---- swipe -----------------------------------------------------------------
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (animating) return;
+    drag.current = { x: e.clientX, y: e.clientY, active: false };
   };
-  const onTouchMove = (e: React.TouchEvent) => {
-    if (zoomed || !dragRef.current || e.touches.length !== 1) return;
-    const t = e.touches[0];
-    const dxNow = t.clientX - dragRef.current.startX;
-    const dyNow = t.clientY - dragRef.current.startY;
-    // Vertical intent: let the scroll happen
-    if (Math.abs(dyNow) > Math.abs(dxNow) + 12) return;
-    dragRef.current.dx = dxNow;
-    setDx(dxNow);
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    const mx = e.clientX - d.x;
+    const my = e.clientY - d.y;
+    if (!d.active) {
+      if (Math.abs(mx) < 8 && Math.abs(my) < 8) return;
+      // Vertical intent belongs to the page, not the carousel.
+      if (Math.abs(my) > Math.abs(mx)) { drag.current = null; return; }
+      d.active = true;
+    }
+    // Resist at the ends so the list feels bounded.
+    const atStart = index === 0 && mx > 0;
+    const atEnd = index === photos.length - 1 && mx < 0;
+    setDx(atStart || atEnd ? mx * 0.25 : mx);
   };
-  const onTouchEnd = () => {
-    if (!dragRef.current) return;
-    const width = window.innerWidth;
-    const threshold = Math.min(120, width * 0.2);
-    const d = dragRef.current.dx;
-    dragRef.current = null;
-    if (d < -threshold) goto(index + 1);
-    else if (d > threshold) goto(index - 1);
-    setDx(0);
+
+  const settle = (target: number, then: () => void) => {
+    setAnimating(true);
+    setDx(target);
+    window.setTimeout(() => {
+      setAnimating(false);
+      setDx(0);
+      then();
+    }, 220);
+  };
+
+  const onPointerUp = () => {
+    const d = drag.current;
+    drag.current = null;
+    if (!d?.active) return;
+    const w = window.innerWidth;
+    if (dx < -w * COMMIT && index < photos.length - 1) {
+      void tap("light");
+      settle(-w, () => go(index + 1));
+    } else if (dx > w * COMMIT && index > 0) {
+      void tap("light");
+      settle(w, () => go(index - 1));
+    } else {
+      settle(0, () => undefined);
+    }
+  };
+
+  // ---- HEIC ------------------------------------------------------------------
+  const isHeicItem = isHeic(photo?.mime, photo?.name);
+  const [heicUrl, setHeicUrl] = useState<string | null>(null);
+  useEffect(() => {
+    setHeicUrl(null);
+    if (!isHeicItem || !photo?.fullSrc) return;
+    let alive = true;
+    void heicUrlToJpegUrl(photo.fullSrc, photo.id).then((u) => { if (alive) setHeicUrl(u); });
+    return () => { alive = false; };
+  }, [photo?.id, photo?.fullSrc, isHeicItem]);
+
+  if (!photo) return null;
+
+  // ---- actions ---------------------------------------------------------------
+  const share = async () => {
+    void tap("medium");
+    if (photo.provider === "device") {
+      if (await shareGalleryItems([photo.id], photo.name)) return;
+    }
+    if (!photo.fullSrc) { toast.error("الملف غير محمّل بعد"); return; }
+    try {
+      const blob = await (await fetch(photo.fullSrc)).blob();
+      const file = new File([blob], photo.name, { type: blob.type || "image/jpeg" });
+      const nav = navigator as Navigator & {
+        canShare?: (d: { files: File[] }) => boolean;
+        share?: (d: { files: File[]; title?: string }) => Promise<void>;
+      };
+      if (nav.canShare?.({ files: [file] }) && nav.share) {
+        await nav.share({ files: [file], title: photo.name });
+        return;
+      }
+      toast.error("المشاركة غير مدعومة هنا");
+    } catch {
+      toast.error("تعذّرت المشاركة");
+    }
   };
 
   const download = async () => {
-    if (!photo?.fullSrc) return;
-    const filename = photo.name || `photo-${Date.now()}.jpg`;
+    if (!photo.fullSrc) return;
+    void tap("medium");
+    const filename = photo.name || `media-${Date.now()}.jpg`;
     try {
-      // On native Android, WebView `fetch()` frequently fails for large
-      // Telegram file URLs with "Failed to fetch". Prefer the native
-      // Filesystem downloader which uses a real HTTP client.
       if (isNative() && /^https?:/i.test(photo.fullSrc)) {
         const path = await downloadUrlToDevice(photo.fullSrc, filename);
         if (path) { toast.success("حُفظ في المستندات"); return; }
       }
-      const res = await fetch(photo.fullSrc);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const blob = await res.blob();
+      const blob = await (await fetch(photo.fullSrc)).blob();
       if (isNative()) {
         const uri = await saveBlobToDevice(filename, blob);
         if (uri) { toast.success("حُفظ في المستندات"); return; }
@@ -107,206 +172,105 @@ export function Lightbox({ photos, index, onClose, onIndexChange, showDownload }
       a.href = url; a.download = filename;
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(url);
-      toast.success("تم التنزيل");
     } catch (e) {
       toast.error("تعذّر التنزيل: " + (e instanceof Error ? e.message : String(e)));
     }
   };
 
-  const isVideo = photo?.kind === "video";
-  const isHeicItem = isHeic(photo?.mime, photo?.name);
-
-  // HEIC never renders in a WebView <img>. Decode it locally to JPEG.
-  useEffect(() => {
-    setHeicUrl(null);
-    if (!isHeicItem || !photo?.fullSrc) return;
-    let alive = true;
-    setDecoding(true);
-    void heicUrlToJpegUrl(photo.fullSrc, photo.id)
-      .then((u) => { if (alive) setHeicUrl(u); })
-      .finally(() => { if (alive) setDecoding(false); });
-    return () => { alive = false; };
-  }, [photo?.id, photo?.fullSrc, isHeicItem]);
-
-  // The HEIC decode may already have happened upstream (Telegram reader), so
-  // fall back to the original bytes when the local decode returns nothing.
-  const imageSrc = heicUrl ?? photo?.fullSrc ?? null;
-
-  // Exotic formats (tiff, dng, bmp on some devices) fail silently inside the
-  // WebView — probe first so we can offer the "save & open" escape hatch.
-  const [imgError, setImgError] = useState(false);
-  useEffect(() => {
-    setImgError(false);
-    if (isVideo || !imageSrc) return;
-    let alive = true;
-    const probe = new Image();
-    probe.onerror = () => { if (alive) setImgError(true); };
-    probe.src = imageSrc;
-    return () => { alive = false; probe.onerror = null; };
-  }, [imageSrc, isVideo]);
-
-  if (!photo) return null;
-
-  const openExternally = async () => {
-    if (!photo.fullSrc) return;
-    const filename = photo.name || `media-${Date.now()}`;
-    try {
-      if (isNative()) {
-        const path = await downloadUrlToDevice(photo.fullSrc, filename);
-        if (path) { toast.success("حُفظ في المستندات — افتحه من مدير الملفات"); return; }
-      }
-      window.open(photo.fullSrc, "_blank");
-    } catch (e) {
-      toast.error("تعذّر الفتح: " + (e instanceof Error ? e.message : String(e)));
-    }
-  };
-
+  const w = typeof window !== "undefined" ? window.innerWidth : 0;
+  const neighbours = [index - 1, index, index + 1].filter((i) => i >= 0 && i < photos.length);
 
   return (
-    <div className="fixed inset-0 z-[60] flex flex-col bg-black/95 backdrop-blur safe-top safe-bottom">
-      <div className="flex items-center justify-between px-3 py-2">
-        <button
-          onClick={close}
-          className="grid h-10 w-10 place-items-center rounded-full bg-white/10 text-white hover:bg-white/20"
-          aria-label="إغلاق"
-        >
-          <X className="h-5 w-5" />
-        </button>
-        <div className="text-xs text-white/70">
-          {index + 1} / {photos.length}
-        </div>
-        <div className="flex items-center gap-2">
-          {(isVideo || isHeicItem) && (
-            <button
-              onClick={openExternally}
-              className="grid h-10 w-10 place-items-center rounded-full bg-white/10 text-white hover:bg-white/20"
-              aria-label="فتح خارجياً"
-              title="فتح خارجياً"
-            >
-              <ExternalLink className="h-5 w-5" />
-            </button>
-          )}
-          {showDownload ? (
-            <button
-              onClick={download}
-              className="grid h-10 w-10 place-items-center rounded-full bg-white/10 text-white hover:bg-white/20"
-              aria-label="تنزيل"
-            >
-              <Download className="h-5 w-5" />
-            </button>
-          ) : <div className="h-10 w-10" />}
+    <div className="fixed inset-0 z-[60] flex flex-col bg-black">
+      {/* Track: prev / current / next move together with the finger. */}
+      <div
+        className="absolute inset-0 touch-pan-y"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onClick={() => setChrome((v) => !v)}
+      >
+        {neighbours.map((i) => (
+          <div
+            key={photos[i].id}
+            className="absolute inset-0"
+            style={{
+              transform: `translate3d(${(i - index) * w + dx}px,0,0)`,
+              transition: animating ? "transform 220ms cubic-bezier(0.22,1,0.36,1)" : "none",
+            }}
+          >
+            <Slide
+              photo={photos[i]}
+              active={i === index}
+              overrideSrc={i === index ? heicUrl ?? undefined : undefined}
+            />
+          </div>
+        ))}
+      </div>
+
+      {/* Chrome */}
+      <div
+        className={cn(
+          "pointer-events-none absolute inset-x-0 top-0 z-10 bg-gradient-to-b from-black/70 to-transparent pb-10 pt-2 transition-opacity safe-top",
+          chrome ? "opacity-100" : "opacity-0",
+        )}
+      >
+        <div className="pointer-events-auto flex items-center justify-between px-3">
+          <button onClick={close} className="press grid h-10 w-10 place-items-center rounded-full bg-white/10 text-white" aria-label="إغلاق">
+            <X className="h-5 w-5" />
+          </button>
+          <div className="text-xs font-semibold text-white/80 tabular-nums">
+            {index + 1} / {photos.length}
+          </div>
+          <button onClick={() => { void tap("light"); setInfo((v) => !v); }} className="press grid h-10 w-10 place-items-center rounded-full bg-white/10 text-white" aria-label="معلومات">
+            <Info className="h-5 w-5" />
+          </button>
         </div>
       </div>
 
       <div
-        className="relative flex-1 select-none overflow-hidden"
-        onTouchStart={onTouchStart}
-        onTouchMove={onTouchMove}
-        onTouchEnd={onTouchEnd}
+        className={cn(
+          "pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/85 to-transparent pt-12 transition-opacity safe-bottom",
+          chrome ? "opacity-100" : "opacity-0",
+        )}
       >
-        <div
-          className="flex h-full w-full items-center justify-center"
-          style={{
-            transform: `translate3d(${dx}px, 0, 0)`,
-            transition: dragRef.current ? "none" : "transform 0.25s ease-out",
-          }}
-        >
-          {isVideo && photo.fullSrc ? (
-            videoError ? (
-              <div className="flex flex-col items-center gap-3 p-6 text-center text-white/80">
-                {photo.posterSrc && (
-                  <img src={photo.posterSrc} alt={photo.name} className="max-h-[60vh] rounded-lg" />
-                )}
-                <p className="text-xs text-white/60">
-                  ترميز هذا الفيديو غير مدعوم داخل التطبيق — احفظه وشغّله بمشغّل الهاتف.
-                </p>
-                <button
-                  onClick={openExternally}
-                  className="flex items-center gap-1.5 rounded-full bg-white/15 px-4 py-2 text-sm font-semibold"
-                >
-                  <ExternalLink className="h-4 w-4" /> حفظ وفتح خارجياً
-                </button>
-              </div>
-            ) : (
-              <video
-                key={photo.id}
-                src={photo.fullSrc}
-                poster={photo.posterSrc}
-                controls
-                autoPlay
-                playsInline
-                // Videos arrive as a local blob: URL — full buffering keeps
-                // seeking smooth inside the Android WebView.
-                preload="auto"
-                className="max-h-full max-w-full rounded-lg shadow-2xl"
-                style={{ viewTransitionName: `photo-${photo.id}` }}
-                onError={() => setVideoError(true)}
-              />
-            )
-          ) : isHeicItem && decoding ? (
-            <div className="flex flex-col items-center gap-3 p-6 text-center text-white/80">
-              {photo.posterSrc && (
-                <img
-                  src={photo.posterSrc}
-                  alt={photo.name}
-                  className="max-h-[70vh] max-w-full rounded-lg shadow-2xl"
-                />
-              )}
-              <p className="text-xs text-white/60">جارٍ فك ترميز HEIC…</p>
-            </div>
-          ) : imageSrc && !imgError ? (
-            <div className="h-full w-full" style={{ viewTransitionName: `photo-${photo.id}` }}>
-              <ZoomableImage
-                src={imageSrc}
-                alt={photo.name}
-                onZoomChange={setZoomed}
-              />
-            </div>
-          ) : imageSrc ? (
-            <div className="flex flex-col items-center gap-3 p-6 text-center text-white/80">
-              {photo.posterSrc && (
-                <img src={photo.posterSrc} alt={photo.name} className="max-h-[60vh] rounded-lg" />
-              )}
-              <p className="text-xs text-white/60">
-                هذه الصيغة غير مدعومة للعرض داخل التطبيق — احفظها وافتحها بمعرض الهاتف.
-              </p>
-              <button
-                onClick={openExternally}
-                className="flex items-center gap-1.5 rounded-full bg-white/15 px-4 py-2 text-sm font-semibold"
-              >
-                <ExternalLink className="h-4 w-4" /> حفظ وفتح خارجياً
-              </button>
-            </div>
-          ) : (
-            <div className="text-sm text-white/60">جارٍ التحميل…</div>
-          )}
+        {info && (
+          <div className="pointer-events-auto mx-4 mb-3 rounded-2xl bg-black/70 p-3 text-[11px] leading-relaxed text-white/85 backdrop-blur" dir="rtl">
+            <div className="mb-1 truncate font-bold text-white">{photo.name}</div>
+            <div>{photo.date.toLocaleString("ar")}</div>
+            {photo.width && photo.height ? <div>{photo.width} × {photo.height}</div> : null}
+            {photo.size ? <div>{(photo.size / 1048576).toFixed(1)} م.ب</div> : null}
+          </div>
+        )}
+
+        <div className="pointer-events-auto">
+          <Filmstrip photos={photos} index={index} onPick={go} />
         </div>
 
-        {index > 0 && (
-          <button
-            onClick={() => goto(index - 1)}
-            className={cn(
-              "absolute left-2 top-1/2 hidden -translate-y-1/2 rounded-full bg-black/40 p-2 text-white md:block",
-              zoomed && "opacity-0",
-            )}
-            aria-label="السابق"
-          >
-            <ChevronLeft className="h-6 w-6" />
-          </button>
-        )}
-        {index < photos.length - 1 && (
-          <button
-            onClick={() => goto(index + 1)}
-            className={cn(
-              "absolute right-2 top-1/2 hidden -translate-y-1/2 rounded-full bg-black/40 p-2 text-white md:block",
-              zoomed && "opacity-0",
-            )}
-            aria-label="التالي"
-          >
-            <ChevronRight className="h-6 w-6" />
-          </button>
-        )}
+        <div className="pointer-events-auto flex items-center justify-around px-6 pb-2 pt-3">
+          <Action icon={Share2} label="مشاركة" onClick={share} />
+          {showDownload && <Action icon={Download} label="حفظ" onClick={download} />}
+          {onDelete && (
+            <Action
+              icon={Trash2}
+              label="حذف"
+              onClick={() => { void tap("heavy"); onDelete(photo); }}
+            />
+          )}
+        </div>
       </div>
     </div>
+  );
+}
+
+function Action({
+  icon: Icon, label, onClick,
+}: { icon: typeof Share2; label: string; onClick: () => void }) {
+  return (
+    <button onClick={onClick} className="press flex flex-col items-center gap-1 px-3 py-1 text-white">
+      <Icon className="h-5 w-5" />
+      <span className="text-[10px] font-semibold">{label}</span>
+    </button>
   );
 }

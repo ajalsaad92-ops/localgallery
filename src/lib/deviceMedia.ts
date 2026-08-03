@@ -120,11 +120,16 @@ let scanning = false;
  * Index the device gallery.
  *
  * @param onProgress called with the number of items indexed so far
- * @param full      ignore the watermark and re-walk the entire library
+ * @param full       ignore the watermark and re-walk the entire library
+ * @param expectGone ids the app just asked the OS to delete. Only these are
+ *   reconciled away — never "everything MediaStore didn't return". With
+ *   partial access (Android 14 "select photos") MediaStore reports just the
+ *   picked subset, so a set-difference would delete the rest of the library.
  */
 export async function scanDeviceGallery(
   onProgress?: (indexed: number) => void,
   full = false,
+  expectGone?: string[],
 ): Promise<number> {
   if (!canScanDeviceGallery() || scanning) return 0;
   if (!(await requestGalleryPermission().catch(() => false))) return 0;
@@ -141,6 +146,7 @@ export async function scanDeviceGallery(
     let offset = 0;
     let inserted = 0;
     let newestSeen = since;
+    const seenIds = new Set<string>();
 
     for (;;) {
       const batch = await scanNativeGalleryBatch(offset, PAGE, since);
@@ -148,6 +154,7 @@ export async function scanDeviceGallery(
       if (items.length === 0) break;
 
       for (const item of items) {
+        if (full || expectGone?.length) seenIds.add(`device-${item.id}`);
         if (item.date > newestSeen) newestSeen = item.date;
         if (await insertNativeAsset(item, knownKeys)) inserted++;
       }
@@ -155,6 +162,30 @@ export async function scanDeviceGallery(
 
       offset += items.length;
       if (items.length < PAGE) break;
+    }
+
+    // Reconcile ONLY what we asked the OS to delete and no longer see. Anything
+    // the user declined in the system dialog is still there and stays indexed.
+    if (expectGone?.length) {
+      const confirmed = expectGone.filter((id) => !seenIds.has(id));
+      if (confirmed.length) {
+        const rows = await photoDb.assets.bulkGet(confirmed);
+        // A copy that already reached Telegram keeps its record — only the
+        // local file is gone. Everything else drops out entirely.
+        const drop: string[] = [];
+        for (const a of rows) {
+          if (!a) continue;
+          if (a.remoteMessageId != null) {
+            await photoDb.assets.update(a.id, {
+              localUri: undefined,
+              provider: "telegram-remote",
+            });
+          } else {
+            drop.push(a.id);
+          }
+        }
+        if (drop.length) await photoDb.assets.bulkDelete(drop);
+      }
     }
 
     // Rewind a minute so an item written during the scan isn't missed.

@@ -22,6 +22,7 @@ function loadTab(): Tab {
 
 const Index = () => {
   const [tab, setTabState] = useState<Tab>(loadTab);
+  const [selecting, setSelecting] = useState(false);
   useSyncLoop();
   useNativeInit();
 
@@ -48,7 +49,7 @@ const Index = () => {
       <main className="min-h-screen">
         {/* Both feeds stay mounted so scroll position survives tab switches. */}
         <div style={{ display: tab === "sync" ? "block" : "none" }}>
-          <SyncScreen />
+          <SyncScreen onSelectionChange={setSelecting} />
         </div>
         <div style={{ display: tab === "telegram" ? "block" : "none" }}>
           <TelegramScreen />
@@ -56,7 +57,8 @@ const Index = () => {
         {tab === "settings" && <SettingsPage onBack={() => setTab("sync")} />}
       </main>
 
-      {tab !== "settings" && <MobileNav active={tab} onChange={setTab} />}
+      {/* The selection bar takes the tab bar's place while items are picked. */}
+      {tab !== "settings" && !selecting && <MobileNav active={tab} onChange={setTab} />}
       <PermissionsWizard />
     </div>
   );

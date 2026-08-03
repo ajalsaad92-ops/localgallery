@@ -148,10 +148,10 @@ async function uploadOne(
     remoteChatId: res.chatId,
     contentKey: asset.contentKey ?? contentKeyOf(asset),
   };
-  if (freeBlob) {
-    patch.blob = undefined;
-    patch.localUri = undefined;
-  }
+  // freeBlobAfterSync is about the IndexedDB copy. Native items never had one
+  // — their bytes live in the phone gallery — so clearing localUri would only
+  // hide the photo from the device tab and make "reclaim space" impossible.
+  if (freeBlob) patch.blob = undefined;
   await photoDb.assets.update(asset.id, patch);
 }
 

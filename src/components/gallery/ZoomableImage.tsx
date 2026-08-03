@@ -7,6 +7,7 @@ interface ZoomableImageProps {
   className?: string;
   /** Called with true when scale > 1 (pan/zoom locked in). */
   onZoomChange?: (zoomed: boolean) => void;
+  onLoad?: () => void;
 }
 
 /**
@@ -18,7 +19,7 @@ interface ZoomableImageProps {
  *
  * Deliberately self-contained: no external gesture libs.
  */
-export function ZoomableImage({ src, alt, className, onZoomChange }: ZoomableImageProps) {
+export function ZoomableImage({ src, alt, className, onZoomChange, onLoad }: ZoomableImageProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
   const [tx, setTx] = useState(0);
@@ -186,6 +187,7 @@ export function ZoomableImage({ src, alt, className, onZoomChange }: ZoomableIma
         src={src}
         alt={alt}
         draggable={false}
+        onLoad={onLoad}
         className={cn("vt-active-photo max-h-full max-w-full select-none rounded-lg shadow-2xl", className)}
         style={{
           transform: `translate3d(${tx}px, ${ty}px, 0) scale(${scale})`,

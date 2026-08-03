@@ -390,6 +390,143 @@ public class LocalGalleryMediaPlugin extends Plugin {
         call.resolve(ret);
     }
 
+    /**
+     * A real thumbnail for one gallery item.
+     *
+     * Rendering the original content:// URI in an <img> decodes a full
+     * multi-megapixel bitmap for a ~130px cell — and silently fails outright
+     * for videos. MediaStore already keeps small thumbnails, so ask for those.
+     */
+    @PluginMethod
+    public void getThumbnail(PluginCall call) {
+        String rawId = call.getString("id", "");
+        int px = Math.max(96, Math.min(512, call.getInt("size", 256)));
+        if (rawId.length() == 0) { call.reject("missing id"); return; }
+
+        boolean isVideo = rawId.startsWith("video-");
+        long id;
+        try {
+            id = Long.parseLong(rawId.replaceFirst("^(image|video)-", ""));
+        } catch (Exception e) { call.reject("bad id"); return; }
+
+        android.graphics.Bitmap bmp = null;
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                Uri uri = Uri.withAppendedPath(
+                    MediaStore.Files.getContentUri("external"), String.valueOf(id));
+                bmp = getContext().getContentResolver()
+                        .loadThumbnail(uri, new android.util.Size(px, px), null);
+            } else if (isVideo) {
+                bmp = MediaStore.Video.Thumbnails.getThumbnail(
+                    getContext().getContentResolver(), id,
+                    MediaStore.Video.Thumbnails.MINI_KIND, null);
+            } else {
+                bmp = MediaStore.Images.Thumbnails.getThumbnail(
+                    getContext().getContentResolver(), id,
+                    MediaStore.Images.Thumbnails.MINI_KIND, null);
+            }
+        } catch (Exception ignored) {}
+
+        if (bmp == null) { call.reject("no thumbnail"); return; }
+
+        try {
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 72, out);
+            String b64 = android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP);
+            JSObject ret = new JSObject();
+            ret.put("dataUrl", "data:image/jpeg;base64," + b64);
+            ret.put("width", bmp.getWidth());
+            ret.put("height", bmp.getHeight());
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("encode failed: " + e.getMessage());
+        } finally {
+            bmp.recycle();
+        }
+    }
+
+    /** Hand a shareable file:// -> content:// URI to the system share sheet. */
+    @PluginMethod
+    public void shareItems(PluginCall call) {
+        JSArray ids = call.getArray("ids");
+        if (ids == null || ids.length() == 0) { call.reject("no ids"); return; }
+        try {
+            java.util.ArrayList<Uri> uris = new java.util.ArrayList<>();
+            boolean anyVideo = false;
+            for (int i = 0; i < ids.length(); i++) {
+                String raw = ids.getString(i);
+                if (raw == null) continue;
+                if (raw.startsWith("video-")) anyVideo = true;
+                long id = Long.parseLong(raw.replaceFirst("^(image|video)-", ""));
+                uris.add(Uri.withAppendedPath(
+                    MediaStore.Files.getContentUri("external"), String.valueOf(id)));
+            }
+            if (uris.isEmpty()) { call.reject("no valid ids"); return; }
+
+            String type = anyVideo ? (uris.size() > 1 ? "*/*" : "video/*") : "image/*";
+            Intent intent;
+            if (uris.size() == 1) {
+                intent = new Intent(Intent.ACTION_SEND);
+                intent.putExtra(Intent.EXTRA_STREAM, uris.get(0));
+            } else {
+                intent = new Intent(Intent.ACTION_SEND_MULTIPLE);
+                intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+            }
+            intent.setType(type);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+            Intent chooser = Intent.createChooser(intent, call.getString("title", "مشاركة"));
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(chooser);
+
+            JSObject ret = new JSObject(); ret.put("ok", true); call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("share failed: " + e.getMessage());
+        }
+    }
+
+    /** Ask the OS to delete gallery items (shows the system confirm on R+). */
+    @PluginMethod
+    public void deleteItems(PluginCall call) {
+        JSArray ids = call.getArray("ids");
+        if (ids == null || ids.length() == 0) { call.reject("no ids"); return; }
+        try {
+            java.util.ArrayList<Uri> uris = new java.util.ArrayList<>();
+            for (int i = 0; i < ids.length(); i++) {
+                String raw = ids.getString(i);
+                if (raw == null) continue;
+                long id = Long.parseLong(raw.replaceFirst("^(image|video)-", ""));
+                uris.add(Uri.withAppendedPath(
+                    MediaStore.Files.getContentUri("external"), String.valueOf(id)));
+            }
+            JSObject ret = new JSObject();
+            if (Build.VERSION.SDK_INT >= 30) {
+                // Android 11+ requires the OS to own the confirmation. Launch it
+                // straight from the Activity — Capacitor's Plugin base class has
+                // no IntentSender helper. The result is not awaited here; the JS
+                // side reconciles against MediaStore afterwards, so a cancelled
+                // dialog simply leaves the items in place.
+                android.app.PendingIntent pi = MediaStore.createDeleteRequest(
+                    getContext().getContentResolver(), uris);
+                getActivity().startIntentSenderForResult(
+                    pi.getIntentSender(), 9911, null, 0, 0, 0);
+                ret.put("requested", true);
+                ret.put("deleted", uris.size());
+                call.resolve(ret);
+                return;
+            }
+            int n = 0;
+            for (Uri u : uris) {
+                try { n += getContext().getContentResolver().delete(u, null, null); }
+                catch (Exception ignored) {}
+            }
+            ret.put("deleted", n);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("delete failed: " + e.getMessage());
+        }
+    }
+
     // ---- self-update --------------------------------------------------------
     @PluginMethod
     public void installApk(PluginCall call) {
