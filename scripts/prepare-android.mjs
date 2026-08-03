@@ -830,19 +830,57 @@ public class MainActivity extends BridgeActivity {
 `,
 );
 
-// ---- Version stamping -------------------------------------------------------
-// Android refuses an APK whose versionCode is lower than the installed one.
+// ---- Signing + version stamping ---------------------------------------------
 const gradlePath = resolve("android/app/build.gradle");
 if (existsSync(gradlePath)) {
+  let gradle = readFileSync(gradlePath, "utf8");
+
+  // Pin the signing key explicitly.
+  //
+  // Without this, a debug build is signed with whatever Gradle finds at its
+  // default debug-keystore location — and on CI that is NOT the file we place
+  // in ~/.android/, so Gradle silently generated a throwaway key on every run.
+  // That is why four consecutive releases shipped four different certificates
+  // and every in-app update failed with a signature mismatch.
+  if (!gradle.includes("signingConfigs.appkey")) {
+    const signingBlock = `
+    signingConfigs {
+        appkey {
+            storeFile file("\${rootDir}/../signing/app-signing.keystore")
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+        }
+    }
+`;
+    gradle = gradle.replace(/android\s*\{/, (m) => `${m}\n${signingBlock}`);
+
+    // Apply it to both build types so the APK is identical either way.
+    if (/buildTypes\s*\{\s*[\s\S]*?\bdebug\s*\{/.test(gradle)) {
+      gradle = gradle.replace(/(\bdebug\s*\{)/, `$1\n            signingConfig signingConfigs.appkey`);
+    } else {
+      gradle = gradle.replace(
+        /buildTypes\s*\{/,
+        `buildTypes {\n        debug {\n            signingConfig signingConfigs.appkey\n        }`,
+      );
+    }
+    gradle = gradle.replace(
+      /(\brelease\s*\{)/,
+      `$1\n            signingConfig signingConfigs.appkey`,
+    );
+    console.log("🔐 Pinned signingConfig to signing/app-signing.keystore");
+  }
+
+  // Android refuses an APK whose versionCode is lower than the installed one.
   const pkgVersion = JSON.parse(readFileSync(resolve("package.json"), "utf8")).version || "1.0.0";
   const runNumber = Number(process.env.GITHUB_RUN_NUMBER || 0);
   const versionCode = runNumber > 0 ? runNumber + 1000 : Math.floor(Date.now() / 60000) % 2000000000;
-  let gradle = readFileSync(gradlePath, "utf8");
   gradle = gradle
     .replace(/versionCode\s+\d+/, `versionCode ${versionCode}`)
     .replace(/versionName\s+"[^"]*"/, `versionName "${pkgVersion}"`);
+
   writeFileSync(gradlePath, gradle);
-  console.log(`\n🔢 versionCode=${versionCode} versionName=${pkgVersion}`);
+  console.log(`🔢 versionCode=${versionCode} versionName=${pkgVersion}`);
 }
 
 console.log(

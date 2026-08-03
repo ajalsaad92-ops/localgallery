@@ -162,8 +162,11 @@ jobs:
           echo "المتوقّع: $EXPECTED"
           echo "الفعلي  : $ACTUAL"
           if [ -z "$ACTUAL" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
+            # The digests go into the annotation so the mismatch is diagnosable
+            # from the public checks API, without needing log access.
             echo "::error::شهادة الـ APK لا تطابق المتوقّع — لن يُنشر."
-            echo "::error::تثبيت هذا الملف كان سيفشل على كل جهاز عليه نسخة سابقة."
+            echo "::error::expected=$EXPECTED"
+            echo "::error::actual=$ACTUAL"
             exit 1
           fi
           echo "✅ شهادة الـ APK مطابقة — التحديث داخل التطبيق سيعمل."
