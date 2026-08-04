@@ -135,10 +135,11 @@ async function uploadOne(
   const file = new File([blob], asset.name, {
     type: asset.mime || blob.type || "application/octet-stream",
   });
+  const key = asset.contentKey ?? contentKeyOf(asset);
   const res = await uploadToTarget(
     file,
     onFraction,
-    buildCaption(asset.name, originalDateOf(asset)),
+    buildCaption(asset.name, originalDateOf(asset), key),
   );
 
   const patch: Partial<MediaAsset> = {
@@ -146,7 +147,7 @@ async function uploadOne(
     syncedAt: Date.now(),
     remoteMessageId: res.messageId,
     remoteChatId: res.chatId,
-    contentKey: asset.contentKey ?? contentKeyOf(asset),
+    contentKey: key,
   };
   // freeBlobAfterSync is about the IndexedDB copy. Native items never had one
   // — their bytes live in the phone gallery — so clearing localUri would only
@@ -164,6 +165,12 @@ export async function pendingCount(): Promise<number> {
 export async function runSyncCycle(): Promise<{ processed: number; failed: number }> {
   if (progress.running) return { processed: 0, failed: 0 };
 
+  // Cheap indexed count first. An armed-but-idle app ticks every few seconds
+  // and must not deserialize the whole library each time.
+  if ((await photoDb.assets.where("provider").equals("device").count()) === 0) {
+    return { processed: 0, failed: 0 };
+  }
+
   const settings = await getSyncSettings();
   if (settings.paused) return { processed: 0, failed: 0 };
   if (!(await isOnline())) return { processed: 0, failed: 0 };
@@ -175,13 +182,20 @@ export async function runSyncCycle(): Promise<{ processed: number; failed: numbe
   const target = await getSavedTarget();
   if (!target) return { processed: 0, failed: 0 };
 
+  // Claim the run before the slow client acquisition — a reconnect can take
+  // minutes, and ticks keep arriving the whole time.
+  emit({ running: true });
   let client: unknown = null;
   try {
     client = await getClient();
   } catch {
+    emit({ running: false });
     return { processed: 0, failed: 0 };
   }
-  if (!client) return { processed: 0, failed: 0 };
+  if (!client) {
+    emit({ running: false });
+    return { processed: 0, failed: 0 };
+  }
 
   const allAssets = await photoDb.assets.toArray();
   // Everything already on Telegram, keyed by content, so a re-indexed copy of
@@ -210,7 +224,10 @@ export async function runSyncCycle(): Promise<{ processed: number; failed: numbe
     uploaded.add(key);
     queue.push(a);
   }
-  if (queue.length === 0) return { processed: 0, failed: 0 };
+  if (queue.length === 0) {
+    emit({ running: false });
+    return { processed: 0, failed: 0 };
+  }
 
   emit({
     running: true, total: queue.length, done: 0, failed: 0,
@@ -245,7 +262,17 @@ export async function runSyncCycle(): Promise<{ processed: number; failed: numbe
         emit({ done, currentFraction: 1 });
       } catch (e) {
         failed++;
-        emit({ failed, lastError: e instanceof Error ? e.message : String(e) });
+        const msg = e instanceof Error ? e.message : String(e);
+        emit({ failed, lastError: msg });
+
+        // A dropped socket fails every remaining item in milliseconds and would
+        // burn the whole queue. Rebuild the client and stop this pass; the
+        // heartbeat starts a fresh one with a healthy connection.
+        if (/disconnect|not connected|timeout|network|socket/i.test(msg)) {
+          const { resetClient } = await import("@/lib/providers/mtproto");
+          await resetClient();
+          break;
+        }
       }
     }
   } finally {

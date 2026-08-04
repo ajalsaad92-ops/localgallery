@@ -8,10 +8,11 @@ export interface GalleryItem {
   name: string;
   /** Grid thumbnail. */
   thumbSrc?: string;
+  /** Set when the bytes are still in the phone gallery, whatever the provider. */
+  localUri?: string;
   /** Full-size source, resolved lazily for remote items. */
   fullSrc?: string;
   /** Poster frame for videos and HEIC. */
-  posterSrc?: string;
   provider?: "device" | "telegram-remote";
   size?: number;
   kind?: "image" | "video";

@@ -18,7 +18,6 @@ export interface MediaAsset {
   exif?: ExifData;
   kind?: "image" | "video";
   duration?: number;
-  posterDataUrl?: string;
   /** Original blob when imported through the browser file picker. */
   blob?: Blob;
   /** Native MediaStore URL. Metadata only — bytes stay in the phone gallery. */
@@ -30,6 +29,17 @@ export interface MediaAsset {
   remoteChatId?: string;
   /** Set once the local asset has been uploaded successfully. */
   syncedAt?: number;
+  /**
+   * @deprecated Previews live in the `thumbs` table since v14 — an inline
+   * base64 string here is loaded by every full-table read.
+   */
+  posterDataUrl?: string;
+}
+
+/** Preview JPEG for a remote item, kept out of the asset row on purpose. */
+export interface ThumbRow {
+  id: string;
+  dataUrl: string;
 }
 
 export interface KV {
@@ -66,6 +76,7 @@ export const DEFAULT_SYNC_SETTINGS: SyncSettings = {
 class PhotoDatabase extends Dexie {
   assets!: Table<MediaAsset, string>;
   kv!: Table<KV, string>;
+  thumbs!: Table<ThumbRow, string>;
 
   constructor() {
     super("localgallery-pro");
@@ -116,6 +127,43 @@ class PhotoDatabase extends Dexie {
         await assets.toCollection().modify((a: MediaAsset) => {
           if (!a.contentKey) a.contentKey = contentKeyOf(a);
         });
+      });
+
+    // v14: preview JPEGs move out of the asset row.
+    //
+    // They were stored inline as base64, and every live query does a full
+    // toArray() — so each gallery update deserialized tens of megabytes of
+    // image data. That is what made the Telegram tab crawl and what pushed the
+    // WebView into out-of-memory kills. Rows are metadata again; previews are
+    // fetched per visible tile.
+    this.version(14)
+      .stores({
+        assets: "id, provider, date, syncedAt, contentKey, remoteMessageId, remoteChatId",
+        kv: "key",
+        thumbs: "id",
+      })
+      .upgrade(async (tx) => {
+        const assets = tx.table("assets");
+        const thumbs = tx.table("thumbs");
+        // Stream it. Reading them all first would be the very out-of-memory
+        // load this migration exists to remove — and a failed upgrade makes
+        // every later open() reject, leaving the app permanently broken.
+        let batch: { id: string; dataUrl: string }[] = [];
+        const flush = async () => {
+          if (!batch.length) return;
+          await thumbs.bulkPut(batch);
+          batch = [];
+        };
+        await assets.toCollection().modify((a: MediaAsset) => {
+          if (typeof a.posterDataUrl !== "string") return;
+          batch.push({ id: a.id, dataUrl: a.posterDataUrl });
+          a.posterDataUrl = undefined;
+        });
+        // `modify` collects synchronously; write what it gathered.
+        for (let i = 0; i < batch.length; i += 200) {
+          await thumbs.bulkPut(batch.slice(i, i + 200));
+        }
+        await flush();
       });
   }
 }

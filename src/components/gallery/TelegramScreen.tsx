@@ -29,7 +29,7 @@ export function TelegramScreen() {
   const [thumbs, setThumbs] = useState<{ done: number; total: number } | null>(null);
 
   const urlFor = useCallback(
-    (a: { id: string; posterDataUrl?: string }) => fullUrls.get(a.id) ?? a.posterDataUrl,
+    (a: { id: string }) => fullUrls.get(a.id),
     [fullUrls],
   );
   const view = useGalleryView(assets, { urlFor });

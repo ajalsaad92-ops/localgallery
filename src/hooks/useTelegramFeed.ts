@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { photoDb, type MediaAsset } from "@/lib/photoDb";
+import { putRemoteThumb, thumbIdsPresent } from "@/lib/remoteThumbs";
 
 /**
  * Import the media history of the selected channel through the linked personal
@@ -8,8 +9,20 @@ import { photoDb, type MediaAsset } from "@/lib/photoDb";
  */
 export async function importChannelHistory(limit = 0): Promise<number> {
   const { fetchChannelMedia } = await import("@/lib/providers/mtproto");
+
+  // A photo uploaded from this phone already has a row carrying its message id.
+  // Without this the import created a second `tgm-` row for the same message
+  // and the channel gallery showed every uploaded photo twice.
+  const byMessage = new Map<string, string>();
+  for (const a of await photoDb.assets.toArray()) {
+    if (a.remoteMessageId != null && a.remoteChatId) {
+      byMessage.set(`${a.remoteChatId}:${a.remoteMessageId}`, a.id);
+    }
+  }
+
   return fetchChannelMedia(limit, async (item) => {
-    const id = `tgm-${item.chatId}-${item.messageId}`;
+    const owner = byMessage.get(`${item.chatId}:${item.messageId}`);
+    const id = owner ?? `tgm-${item.chatId}-${item.messageId}`;
     const base: Partial<MediaAsset> = {
       provider: "telegram-remote",
       remoteMessageId: item.messageId,
@@ -22,13 +35,22 @@ export async function importChannelHistory(limit = 0): Promise<number> {
       height: item.height,
       duration: item.duration,
       date: item.date || Date.now(),
+      ...(item.contentKey ? { contentKey: item.contentKey } : {}),
     };
-    // Never wipe a poster that was already downloaded.
-    if (item.thumbDataUrl) base.posterDataUrl = item.thumbDataUrl;
+    if (item.thumbDataUrl) await putRemoteThumb(id, item.thumbDataUrl);
 
     const existing = await photoDb.assets.get(id);
-    if (existing) await photoDb.assets.update(id, base);
-    else await photoDb.assets.put({ id, createdAt: Date.now(), ...base } as MediaAsset);
+    if (existing) {
+      // An uploaded local copy keeps its own name, size and local path — only
+      // refresh what the channel is authoritative about.
+      const patch = owner
+        ? { remoteMessageId: base.remoteMessageId, remoteChatId: base.remoteChatId }
+        : base;
+      await photoDb.assets.update(id, patch);
+    } else {
+      await photoDb.assets.put({ id, createdAt: Date.now(), ...base } as MediaAsset);
+    }
+    byMessage.set(`${item.chatId}:${item.messageId}`, id);
   });
 }
 
@@ -45,8 +67,9 @@ export async function hydrateThumbnails(
   hydrating = true;
   try {
     const { fetchMessageThumb } = await import("@/lib/providers/mtproto");
+    const have = await thumbIdsPresent();
     const pending = (await photoDb.assets.toArray()).filter(
-      (a) => a.provider === "telegram-remote" && !a.posterDataUrl && a.remoteMessageId != null,
+      (a) => a.remoteMessageId != null && !have.has(a.id) && !a.localUri,
     );
     const total = pending.length;
     if (total === 0) return;
@@ -59,7 +82,7 @@ export async function hydrateThumbnails(
         if (!a) return;
         try {
           const url = await fetchMessageThumb(a.remoteMessageId!);
-          if (url) await photoDb.assets.update(a.id, { posterDataUrl: url });
+          if (url) await putRemoteThumb(a.id, url);
         } catch {
           /* keep going */
         }

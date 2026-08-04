@@ -8,14 +8,37 @@
  */
 
 const TAG = "#lgts";
+const KEY_TAG = "#lgk";
 
-/** Caption sent with every uploaded file: readable date + machine tag. */
-export function buildCaption(name: string, takenAtMs: number): string {
+/**
+ * Caption sent with every uploaded file: readable date, the original capture
+ * timestamp, and the content key.
+ *
+ * The key is what makes a duplicate upload impossible. If the app is killed
+ * mid-upload — or reinstalled — reading the channel back recovers the exact key
+ * the local row carries, so the file is recognised as already on Telegram
+ * instead of being sent a second time.
+ */
+export function buildCaption(name: string, takenAtMs: number, contentKey?: string): string {
   const ts = Number.isFinite(takenAtMs) && takenAtMs > 0 ? Math.round(takenAtMs) : Date.now();
   const d = new Date(ts);
   const pad = (n: number) => String(n).padStart(2, "0");
   const human = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  return `${name}\n📅 ${human}\n${TAG}:${ts}`;
+  // Percent-encoded so the key survives names containing spaces or newlines.
+  const key = contentKey ? `\n${KEY_TAG}:${encodeURIComponent(contentKey)}` : "";
+  return `${name}\n📅 ${human}\n${TAG}:${ts}${key}`;
+}
+
+/** Read back the content key this app stamped at upload time. */
+export function parseCaptionKey(caption?: string | null): string | undefined {
+  if (!caption) return undefined;
+  const m = caption.match(/#lgk:(\S+)/);
+  if (!m) return undefined;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Read back the embedded timestamp, if this app uploaded the file. */

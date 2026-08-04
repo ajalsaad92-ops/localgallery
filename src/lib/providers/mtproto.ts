@@ -4,7 +4,7 @@
  * The session string is stored locally in IndexedDB (kv table).
  */
 import { photoDb, MAX_UPLOAD_MB } from "@/lib/photoDb";
-import { resolveOriginalDate } from "@/lib/captionMeta";
+import { parseCaptionKey, resolveOriginalDate } from "@/lib/captionMeta";
 
 
 
@@ -62,14 +62,30 @@ type AnyClient = {
 };
 
 let cached: AnyClient | null = null;
+// Ticks fire every few seconds; a slow reconnect would otherwise let two
+// of them build separate clients and open two sessions on one account.
+let connecting: Promise<AnyClient | null> | null = null;
 
 async function buildClient(session: string, creds: MtprotoCreds): Promise<AnyClient> {
   const { TelegramClient } = await import("telegram");
   const { StringSession } = await import("telegram/sessions");
   return new TelegramClient(new StringSession(session), creds.apiId, creds.apiHash, {
-    connectionRetries: 3,
+    // Locking the screen puts the device into Doze and the socket is dropped.
+    // Three attempts used to exhaust themselves in seconds and leave the client
+    // permanently dead; keep retrying with a real backoff instead.
+    connectionRetries: 100,
+    retryDelay: 2000,
+    autoReconnect: true,
     useWSS: true,
+    // Uploads are what matter here — don't let a stalled request block them.
+    requestRetries: 5,
+    timeout: 30,
   }) as unknown as AnyClient;
+}
+
+/** gramjs exposes `connected`; treat anything else as unusable. */
+function isAlive(c: AnyClient | null): boolean {
+  return !!c && (c as unknown as { connected?: boolean }).connected === true;
 }
 
 async function persist(client: AnyClient) {
@@ -77,15 +93,50 @@ async function persist(client: AnyClient) {
 }
 
 /** Returns a connected client for an already-authorized account, or null. */
+/**
+ * A connected client, or null when no account is linked.
+ *
+ * The cached instance is verified every time. Locking the screen drops the
+ * socket, and the previous version handed the dead client back forever after —
+ * so uploads stopped the first time the phone slept and never resumed until
+ * the app was force-restarted. Reconnect, and rebuild if that fails.
+ */
 export async function getClient(): Promise<AnyClient | null> {
-  if (cached) return cached;
+  if (connecting) return connecting;
+  connecting = acquireClient().finally(() => { connecting = null; });
+  return connecting;
+}
+
+async function acquireClient(): Promise<AnyClient | null> {
+  if (cached) {
+    if (isAlive(cached)) return cached;
+    try {
+      await cached.connect();
+      if (isAlive(cached)) return cached;
+    } catch {
+      /* fall through to a fresh client */
+    }
+    try { await cached.disconnect(); } catch { /* ignore */ }
+    cached = null;
+  }
+
   const creds = await getSavedCreds();
   const session = await getSavedSession();
   if (!creds || !session) return null;
+
   const client = await buildClient(session, creds);
   await client.connect();
+  if (!isAlive(client)) return null;
   cached = client;
   return client;
+}
+
+/** Drops the cached client so the next call reconnects from scratch. */
+export async function resetClient() {
+  const c = cached;
+  cached = null;
+  connecting = null;
+  try { await c?.disconnect(); } catch { /* ignore */ }
 }
 
 export async function currentAccount(): Promise<MtprotoAccount | null> {
@@ -297,6 +348,8 @@ export interface MtMediaItem {
   height?: number;
   duration?: number;
   thumbDataUrl?: string;
+  /** Content key stamped into the caption at upload time, when present. */
+  contentKey?: string;
 }
 
 const toDataUrl = (bytes: Uint8Array, mime = "image/jpeg") => {
@@ -392,6 +445,7 @@ export async function fetchChannelMedia(
         messageDateMs: Number(m.date ?? 0) * 1000,
       }),
       uploadedAt: Number(m.date ?? 0) * 1000,
+      contentKey: parseCaptionKey(caption),
       name: fileName,
       size: Number(doc?.size ?? 0),
       mime,

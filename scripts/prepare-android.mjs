@@ -696,7 +696,10 @@ public class SyncForegroundService extends Service {
     private static final int NOTIF_ID = 4711;
     private static final String PREFS = "sync_prefs";
     private static final String KEY_ARMED = "armed";
-    private static final long TICK_MS = 15000L;
+    // Fast while a queue is running, slow while merely watching — an idle
+    // 5s heartbeat would wake the WebView all night for nothing.
+    private static final long TICK_ACTIVE_MS = 5000L;
+    private static final long TICK_IDLE_MS = 30000L;
 
     public static final String ACTION_PAUSE = "app.lovable.sync.PAUSE";
     public static final String ACTION_RESUME = "app.lovable.sync.RESUME";
@@ -729,7 +732,9 @@ public class SyncForegroundService extends Service {
             if (pm != null) {
                 wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "LocalGallery:sync");
                 wakeLock.setReferenceCounted(false);
-                wakeLock.acquire(6 * 60 * 60 * 1000L);
+                // Renewed on every tick — an expired lock is why long queues
+                // died overnight with no error anywhere.
+                wakeLock.acquire(10 * 60 * 1000L);
             }
             android.net.wifi.WifiManager wm =
                 (android.net.wifi.WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
@@ -771,12 +776,16 @@ public class SyncForegroundService extends Service {
         ticker = new android.os.Handler(android.os.Looper.getMainLooper());
         tick = new Runnable() {
             @Override public void run() {
+                try {
+                    if (wakeLock != null && !wakeLock.isHeld()) wakeLock.acquire(10 * 60 * 1000L);
+                    if (wifiLock != null && !wifiLock.isHeld()) wifiLock.acquire();
+                } catch (Exception ignored) {}
                 if (!paused) {
                     Intent out = new Intent(BROADCAST_COMMAND).setPackage(getPackageName());
                     out.putExtra("action", "tick");
                     sendBroadcast(out);
                 }
-                ticker.postDelayed(this, TICK_MS);
+                ticker.postDelayed(this, active ? TICK_ACTIVE_MS : TICK_IDLE_MS);
             }
         };
         ticker.postDelayed(tick, 5000);

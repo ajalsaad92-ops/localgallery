@@ -1,36 +1,49 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { cachedThumb, loadThumb } from "@/lib/thumbs";
+import {
+  cachedRemoteThumb, getRemoteThumb, thumbsVersion, watchRemoteThumbs,
+} from "@/lib/remoteThumbs";
 import type { GalleryItem } from "@/lib/galleryItem";
 
 /**
- * One tile image. Prefers a MediaStore thumbnail for device items — pointing
- * <img> at the original content:// URI decodes a full-size bitmap per cell and
- * cannot render video at all.
+ * One tile image.
+ *
+ * The choice of source is "are the bytes on this phone", NOT which provider
+ * owns the row: an uploaded photo becomes `telegram-remote` while its file
+ * stays in the gallery. Getting that wrong sends the tile back to the original
+ * content:// URI — a full-size decode per cell, and nothing at all for video.
  */
 export function Thumb({ photo }: { photo: GalleryItem }) {
-  const device = photo.provider === "device";
+  const local = !!photo.localUri;
+  // Re-read once hydration lands, otherwise tiles that mounted before their
+  // preview existed stay blank.
+  const version = useSyncExternalStore(watchRemoteThumbs, thumbsVersion, thumbsVersion);
+
   const [src, setSrc] = useState<string | undefined>(() =>
-    device ? cachedThumb(photo.id) ?? photo.posterSrc : photo.thumbSrc ?? photo.posterSrc,
+    local ? cachedThumb(photo.id) : cachedRemoteThumb(photo.id),
   );
 
   useEffect(() => {
-    if (!device) {
-      setSrc(photo.thumbSrc ?? photo.posterSrc);
-      return;
-    }
-    const hit = cachedThumb(photo.id);
-    if (hit) {
-      setSrc(hit);
-      return;
-    }
     let alive = true;
-    void loadThumb(photo.id).then((url) => {
-      if (!alive) return;
-      // Still images can fall back to the original; video cannot.
-      setSrc(url ?? (photo.kind === "video" ? undefined : photo.thumbSrc));
+
+    if (local) {
+      const hit = cachedThumb(photo.id);
+      if (hit) { setSrc(hit); return; }
+      void loadThumb(photo.id).then((url) => {
+        if (!alive) return;
+        // Stills can fall back to the original bytes; video cannot.
+        setSrc(url ?? (photo.kind === "video" ? undefined : photo.localUri));
+      });
+      return () => { alive = false; };
+    }
+
+    const hit = cachedRemoteThumb(photo.id);
+    if (hit) { setSrc(hit); return; }
+    void getRemoteThumb(photo.id).then((url) => {
+      if (alive && url) setSrc(url);
     });
     return () => { alive = false; };
-  }, [photo.id, photo.thumbSrc, photo.posterSrc, photo.kind, device]);
+  }, [photo.id, photo.localUri, photo.kind, local, version]);
 
   if (!src) {
     return <div className="h-full w-full animate-pulse bg-secondary" />;

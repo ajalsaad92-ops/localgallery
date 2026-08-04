@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Play } from "lucide-react";
 import type { GalleryItem } from "@/lib/galleryItem";
 import { cachedThumb, loadThumb } from "@/lib/thumbs";
+import { cachedRemoteThumb, getRemoteThumb } from "@/lib/remoteThumbs";
 import { ZoomableImage } from "./ZoomableImage";
 
 /**
@@ -19,7 +20,7 @@ export function Slide({
   overrideSrc?: string;
 }) {
   const [poster, setPoster] = useState<string | undefined>(
-    () => cachedThumb(photo.id) ?? photo.posterSrc,
+    () => cachedThumb(photo.id) ?? cachedRemoteThumb(photo.id),
   );
   const [loaded, setLoaded] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -28,9 +29,12 @@ export function Slide({
   useEffect(() => {
     if (poster) return;
     let alive = true;
-    void loadThumb(photo.id, 512).then((u) => { if (alive && u) setPoster(u); });
+    const load = photo.provider === "device"
+      ? loadThumb(photo.id, 512)
+      : getRemoteThumb(photo.id);
+    void load.then((u) => { if (alive && u) setPoster(u); });
     return () => { alive = false; };
-  }, [photo.id, poster]);
+  }, [photo.id, photo.provider, poster]);
 
   // Swiping away from a playing video must stop it.
   useEffect(() => {
