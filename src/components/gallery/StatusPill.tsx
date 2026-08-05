@@ -36,17 +36,19 @@ async function computeStats(): Promise<Stats> {
     photos: 0, videos: 0, reclaimable: 0, reclaimableIds: [],
   };
   for (const a of rows) {
+    // Channel-only records are not files on this phone — they are not counted
+    // here and nothing about them can be reclaimed.
+    if (a.provider !== "device") continue;
     if (a.kind === "video") s.videos++; else s.photos++;
-    const synced = a.syncedAt != null || a.remoteMessageId != null;
-    if (synced) {
+    if (a.syncedAt != null) {
       s.uploaded++;
       s.uploadedBytes += a.size || 0;
       // Safe to remove from the phone: it is already on Telegram.
-      if (a.provider === "device" && a.localUri) {
+      if (a.localUri) {
         s.reclaimable += a.size || 0;
         s.reclaimableIds.push(a.id);
       }
-    } else if (a.provider === "device") {
+    } else {
       s.pending++;
       s.pendingBytes += a.size || 0;
     }

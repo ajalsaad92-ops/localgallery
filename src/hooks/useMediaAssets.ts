@@ -18,9 +18,11 @@ export function useMediaAssets(filter: Filter = { kind: "all" }): MediaAsset[] {
       switch (kind) {
         case "device":
           // Everything physically on this phone, uploaded or not.
-          return rows.filter((r) => r.provider === "device" || r.localUri || r.blob);
+          return rows.filter((r) => r.provider === "device");
         case "telegram-remote":
-          return rows.filter((r) => r.remoteMessageId != null);
+          // Only the channel index. A local row is never mirrored here, so a
+          // photo can no longer show up twice.
+          return rows.filter((r) => r.provider === "telegram-remote");
         default:
           return rows;
       }

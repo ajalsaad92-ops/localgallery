@@ -143,7 +143,8 @@ async function uploadOne(
   );
 
   const patch: Partial<MediaAsset> = {
-    provider: "telegram-remote",
+    // provider stays "device". Flipping it made the same photo appear twice in
+    // the channel tab — once as the local row, once as the imported message.
     syncedAt: Date.now(),
     remoteMessageId: res.messageId,
     remoteChatId: res.chatId,

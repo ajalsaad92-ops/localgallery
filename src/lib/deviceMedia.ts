@@ -173,18 +173,9 @@ export async function scanDeviceGallery(
         const rows = await photoDb.assets.bulkGet(confirmed);
         // A copy that already reached Telegram keeps its record — only the
         // local file is gone. Everything else drops out entirely.
-        const drop: string[] = [];
-        for (const a of rows) {
-          if (!a) continue;
-          if (a.remoteMessageId != null) {
-            await photoDb.assets.update(a.id, {
-              localUri: undefined,
-              provider: "telegram-remote",
-            });
-          } else {
-            drop.push(a.id);
-          }
-        }
+        // The channel copy is a separate row now, so a phone row whose file is
+        // gone has nothing left to represent.
+        const drop = rows.filter(Boolean).map((a) => a!.id);
         if (drop.length) await photoDb.assets.bulkDelete(drop);
       }
     }

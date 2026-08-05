@@ -177,6 +177,18 @@ class PhotoDatabase extends Dexie {
       kv: "key",
       thumbs: "id",
     });
+
+    // v16: a phone file stays "device" forever. Earlier builds re-labelled the
+    // row as "telegram-remote" once it uploaded, which made the channel tab
+    // show the same photo twice — once from the local row, once from the
+    // imported message. Put those rows back where they belong.
+    this.version(16).upgrade(async (tx) => {
+      await tx.table("assets").toCollection().modify((a: MediaAsset) => {
+        if (a.provider === "telegram-remote" && a.localUri && !a.id.startsWith("tgm-")) {
+          a.provider = "device";
+        }
+      });
+    });
   }
 }
 

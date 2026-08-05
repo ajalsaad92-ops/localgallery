@@ -1024,7 +1024,13 @@ if (existsSync(gradlePath)) {
   // Android refuses an APK whose versionCode is lower than the installed one.
   const pkgVersion = JSON.parse(readFileSync(resolve("package.json"), "utf8")).version || "1.0.0";
   const runNumber = Number(process.env.GITHUB_RUN_NUMBER || 0);
-  const versionCode = runNumber > 0 ? runNumber + 1000 : Math.floor(Date.now() / 60000) % 2000000000;
+  // The offset must clear every versionCode ever published, because the run
+  // counter restarted at 1 when the project moved repositories. The old repo
+  // reached run 53 (versionCode 1053); anything below that is refused by
+  // Android as a downgrade even when the signature matches.
+  const VERSION_CODE_BASE = 3000;
+  const versionCode =
+    runNumber > 0 ? runNumber + VERSION_CODE_BASE : Math.floor(Date.now() / 60000) % 2000000000;
   gradle = gradle
     .replace(/versionCode\s+\d+/, `versionCode ${versionCode}`)
     .replace(/versionName\s+"[^"]*"/, `versionName "${pkgVersion}"`);

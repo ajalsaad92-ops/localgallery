@@ -10,19 +10,8 @@ import { putRemoteThumb, thumbIdsPresent } from "@/lib/remoteThumbs";
 export async function importChannelHistory(limit = 0): Promise<number> {
   const { fetchChannelMedia } = await import("@/lib/providers/mtproto");
 
-  // A photo uploaded from this phone already has a row carrying its message id.
-  // Without this the import created a second `tgm-` row for the same message
-  // and the channel gallery showed every uploaded photo twice.
-  const byMessage = new Map<string, string>();
-  for (const a of await photoDb.assets.toArray()) {
-    if (a.remoteMessageId != null && a.remoteChatId) {
-      byMessage.set(`${a.remoteChatId}:${a.remoteMessageId}`, a.id);
-    }
-  }
-
   return fetchChannelMedia(limit, async (item) => {
-    const owner = byMessage.get(`${item.chatId}:${item.messageId}`);
-    const id = owner ?? `tgm-${item.chatId}-${item.messageId}`;
+    const id = `tgm-${item.chatId}-${item.messageId}`;
     const base: Partial<MediaAsset> = {
       provider: "telegram-remote",
       remoteMessageId: item.messageId,
@@ -40,17 +29,8 @@ export async function importChannelHistory(limit = 0): Promise<number> {
     if (item.thumbDataUrl) await putRemoteThumb(id, item.thumbDataUrl);
 
     const existing = await photoDb.assets.get(id);
-    if (existing) {
-      // An uploaded local copy keeps its own name, size and local path — only
-      // refresh what the channel is authoritative about.
-      const patch = owner
-        ? { remoteMessageId: base.remoteMessageId, remoteChatId: base.remoteChatId }
-        : base;
-      await photoDb.assets.update(id, patch);
-    } else {
-      await photoDb.assets.put({ id, createdAt: Date.now(), ...base } as MediaAsset);
-    }
-    byMessage.set(`${item.chatId}:${item.messageId}`, id);
+    if (existing) await photoDb.assets.update(id, base);
+    else await photoDb.assets.put({ id, createdAt: Date.now(), ...base } as MediaAsset);
   });
 }
 
