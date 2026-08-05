@@ -24,6 +24,8 @@ export interface MediaAsset {
   localUri?: string;
   /** Stable content signature used to avoid uploading the same file twice. */
   contentKey?: string;
+  /** Album folder on the phone, used for the folders view. */
+  bucket?: string;
   remoteMessageId?: number;
   /** Channel/group id the message lives in. */
   remoteChatId?: string;
@@ -165,6 +167,16 @@ class PhotoDatabase extends Dexie {
         }
         await flush();
       });
+
+    // v15: index the album folder for the folders view. This has to be its own
+    // version — v14 already shipped, and Dexie only applies a version's schema
+    // to databases that have not reached it yet.
+    this.version(15).stores({
+      assets:
+        "id, provider, date, syncedAt, contentKey, remoteMessageId, remoteChatId, bucket",
+      kv: "key",
+      thumbs: "id",
+    });
   }
 }
 

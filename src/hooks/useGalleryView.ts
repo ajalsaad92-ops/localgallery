@@ -39,6 +39,25 @@ const toItem = (a: MediaAsset, thumb?: string): GalleryItem => ({
   provider: a.provider,
 });
 
+/** Folders whose contents are noise in a photo timeline. */
+const SCREENSHOT_RE = /screenshot|لقطات|screen ?shots?|captures?/i;
+
+export const isScreenshot = (a: MediaAsset) =>
+  SCREENSHOT_RE.test(a.bucket ?? "") || SCREENSHOT_RE.test(a.name);
+
+/** Photos taken on this calendar day in an earlier year. */
+export function onThisDay(assets: MediaAsset[], now = new Date()): MediaAsset[] {
+  const d = now.getDate();
+  const m = now.getMonth();
+  const y = now.getFullYear();
+  return assets
+    .filter((a) => {
+      const t = new Date(a.date);
+      return t.getDate() === d && t.getMonth() === m && t.getFullYear() < y;
+    })
+    .sort((x, z) => z.date - x.date);
+}
+
 export interface GalleryView {
   filter: MediaFilter;
   setFilter: (f: MediaFilter) => void;
@@ -47,6 +66,12 @@ export interface GalleryView {
   items: GalleryItem[];
   assets: MediaAsset[];
   counts: Partial<Record<MediaFilter, number>>;
+  query: string;
+  setQuery: (q: string) => void;
+  /** Album folders present in the library, largest first. */
+  buckets: { name: string; count: number }[];
+  bucket: string | null;
+  setBucket: (b: string | null) => void;
 }
 
 /** Filtering, sorting and duplicate detection shared by both galleries. */
@@ -56,6 +81,8 @@ export function useGalleryView(
 ): GalleryView {
   const [filter, setFilter] = useState<MediaFilter>(opts.defaultFilter ?? "all");
   const [sort, setSort] = useState<SortOrder>("newest");
+  const [query, setQuery] = useState("");
+  const [bucket, setBucket] = useState<string | null>(null);
   const urlFor = opts.urlFor;
 
   const dupes = useMemo(
@@ -64,22 +91,51 @@ export function useGalleryView(
   );
 
   const counts = useMemo<Partial<Record<MediaFilter, number>>>(() => {
-    let photos = 0, videos = 0, pending = 0;
+    let photos = 0, videos = 0, pending = 0, shots = 0;
     for (const a of assets) {
-      if (a.kind === "video") videos++; else photos++;
+      const shot = isScreenshot(a);
+      if (shot) shots++;
+      if (a.kind === "video") videos++;
+      else if (!shot) photos++;
       if (a.provider === "device" && a.syncedAt == null) pending++;
     }
-    return { all: assets.length, photos, videos, pending };
+    return { all: assets.length - shots, photos, videos, pending, screenshots: shots };
+  }, [assets]);
+
+  const buckets = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const a of assets) {
+      if (!a.bucket) continue;
+      counts.set(a.bucket, (counts.get(a.bucket) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((x, z) => z.count - x.count);
   }, [assets]);
 
   const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
     const rows = assets.filter((a) => {
+      if (bucket && a.bucket !== bucket) return false;
+      if (q) {
+        const when = new Date(a.date);
+        const haystack = [
+          a.name,
+          a.bucket ?? "",
+          String(when.getFullYear()),
+          when.toLocaleDateString("ar", { month: "long", year: "numeric" }),
+          when.toLocaleDateString("en", { month: "long" }),
+        ].join(" ").toLowerCase();
+        if (!haystack.includes(q)) return false;
+      }
       switch (filter) {
-        case "photos": return a.kind !== "video";
+        case "photos": return a.kind !== "video" && !isScreenshot(a);
         case "videos": return a.kind === "video";
+        case "screenshots": return isScreenshot(a);
         case "pending": return a.provider === "device" && a.syncedAt == null;
         case "duplicates": return dupes.has(a.id);
-        default: return true;
+        // The main timeline stays clean: screenshots live in their own filter.
+        default: return !isScreenshot(a);
       }
     });
 
@@ -88,14 +144,17 @@ export function useGalleryView(
     else if (sort === "largest") sorted.sort((x, y) => (y.size || 0) - (x.size || 0));
     else sorted.sort((x, y) => y.date - x.date);
     return sorted;
-  }, [assets, filter, sort, dupes]);
+  }, [assets, filter, sort, dupes, query, bucket]);
 
   const items = useMemo(
     () => filtered.map((a) => toItem(a, urlFor?.(a))),
     [filtered, urlFor],
   );
 
-  return { filter, setFilter, sort, setSort, items, assets: filtered, counts };
+  return {
+    filter, setFilter, sort, setSort, items, assets: filtered, counts,
+    query, setQuery, buckets, bucket, setBucket,
+  };
 }
 
 /** Multi-select state for a grid. */

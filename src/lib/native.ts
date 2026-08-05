@@ -25,6 +25,8 @@ export interface NativeGalleryAsset {
   duration?: number;
   kind: "image" | "video";
   webPath: string;
+  /** Album folder: Camera, WhatsApp Images, Screenshots… */
+  bucket?: string;
 }
 
 interface LocalGalleryMediaPlugin {

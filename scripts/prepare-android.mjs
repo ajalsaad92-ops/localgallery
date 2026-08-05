@@ -298,7 +298,8 @@ public class LocalGalleryMediaPlugin extends Plugin {
             MediaStore.Files.FileColumns.DATE_MODIFIED,
             MediaStore.Files.FileColumns.WIDTH,
             MediaStore.Files.FileColumns.HEIGHT,
-            MediaStore.Files.FileColumns.MEDIA_TYPE
+            MediaStore.Files.FileColumns.MEDIA_TYPE,
+            MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME
         };
         // DURATION only exists on MediaStore.Files from API 29 onwards.
         if (Build.VERSION.SDK_INT >= 29) {
@@ -351,6 +352,7 @@ public class LocalGalleryMediaPlugin extends Plugin {
                 int iW = cursor.getColumnIndex(MediaStore.Files.FileColumns.WIDTH);
                 int iH = cursor.getColumnIndex(MediaStore.Files.FileColumns.HEIGHT);
                 int iType = cursor.getColumnIndex(MediaStore.Files.FileColumns.MEDIA_TYPE);
+                int iBucket = cursor.getColumnIndex(MediaStore.Files.FileColumns.BUCKET_DISPLAY_NAME);
                 int iDur = Build.VERSION.SDK_INT >= 29
                     ? cursor.getColumnIndex(MediaStore.Files.FileColumns.DURATION) : -1;
 
@@ -376,6 +378,8 @@ public class LocalGalleryMediaPlugin extends Plugin {
                     o.put("height", getInt(cursor, iH));
                     o.put("duration", isVideo ? getLong(cursor, iDur) / 1000L : 0);
                     o.put("kind", isVideo ? "video" : "image");
+                    // The album folder — Camera, WhatsApp Images, Screenshots…
+                    o.put("bucket", getStr(cursor, iBucket));
                     o.put("webPath", toWebPath(itemUri));
                     items.put(o);
                 }

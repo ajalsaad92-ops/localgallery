@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2 } from "lucide-react";
 import { useMediaAssets } from "@/hooks/useMediaAssets";
-import { useGalleryView, useSelection } from "@/hooks/useGalleryView";
+import { useGalleryView, useSelection, onThisDay } from "@/hooks/useGalleryView";
+import { useUpdateWatcher } from "@/hooks/useUpdateWatcher";
+import { launchApkInstall } from "@/lib/ota";
+import { Memories } from "./Memories";
+import { UpdateBanner } from "./UpdateBanner";
 import { getSavedTarget, type MtTarget } from "@/lib/providers/mtproto";
 import { PhotoGrid } from "./PhotoGrid";
 import { Lightbox } from "./Lightbox";
@@ -25,6 +29,7 @@ export function SyncScreen({ onSelectionChange }: { onSelectionChange?: (on: boo
   const { density } = useGridDensity();
   const [lightbox, setLightbox] = useState<number | null>(null);
   const [target, setTarget] = useState<MtTarget | null>(null);
+  const { update, dismiss } = useUpdateWatcher();
 
   useEffect(() => {
     let alive = true;
@@ -53,19 +58,34 @@ export function SyncScreen({ onSelectionChange }: { onSelectionChange?: (on: boo
 
   return (
     <div className="min-h-full pb-32">
-      <header className="hero-glow safe-top px-5 pb-3 pt-5">
-        <div className="flex items-end justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="headline text-[46px] leading-none tabular-nums">
-              {view.items.length}
-            </h1>
-            <p className="mt-0.5 truncate text-sm font-semibold text-muted-foreground">
-              {pendingIds.size > 0 ? `${pendingIds.size} بانتظار الرفع` : "كل شيء محفوظ ✨"}
-            </p>
+      {/*
+        One short row instead of the old block. The 46px count, the subtitle and
+        the status strip together ate roughly a quarter of the screen before any
+        photo appeared.
+      */}
+      <header className="safe-top flex items-center gap-3 px-4 pb-1 pt-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-1.5">
+            <span className="text-[19px] font-black leading-none tabular-nums">
+              {view.items.length.toLocaleString("ar")}
+            </span>
+            <span className="truncate text-[11px] font-semibold text-muted-foreground">
+              {pendingIds.size > 0
+                ? `· ${pendingIds.size.toLocaleString("ar")} بانتظار الرفع`
+                : "· كل شيء محفوظ ✨"}
+            </span>
           </div>
-          <UploadFab compact />
         </div>
+        <UploadFab compact />
       </header>
+
+      {update?.apkUrl && (
+        <UpdateBanner
+          version={update.latestVersion ?? ""}
+          onInstall={() => void launchApkInstall(update.apkUrl!)}
+          onLater={dismiss}
+        />
+      )}
 
       <StatusPill />
 
@@ -81,7 +101,22 @@ export function SyncScreen({ onSelectionChange }: { onSelectionChange?: (on: boo
         sort={view.sort}
         onSort={view.setSort}
         counts={view.counts}
+        query={view.query}
+        onQuery={view.setQuery}
+        buckets={view.buckets}
+        bucket={view.bucket}
+        onBucket={view.setBucket}
       />
+
+      {view.filter === "all" && !view.query && !view.bucket && (
+        <Memories
+          assets={onThisDay(assets)}
+          onOpen={(id) => {
+            const i = view.items.findIndex((p) => p.id === id);
+            if (i >= 0) runViewTransition(() => setLightbox(i));
+          }}
+        />
+      )}
 
       <div className="px-2">
         <PhotoGrid

@@ -109,6 +109,7 @@ async function insertNativeAsset(
     duration: item.duration,
     localUri: item.webPath,
     contentKey: key,
+    bucket: item.bucket || undefined,
   });
   knownKeys.add(key);
   return true;

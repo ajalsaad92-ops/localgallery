@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { tap } from "@/lib/native";
 import { columnsFor, type GridDensity } from "@/hooks/useGridDensity";
 import { Thumb } from "./Thumb";
+import { Scrubber, type ScrubMark } from "./Scrubber";
 
 interface PhotoGridProps {
   photos: GalleryItem[];
@@ -19,6 +20,8 @@ interface PhotoGridProps {
   onEnterSelection?: (id: string) => void;
   /** Marks items still waiting to upload. */
   pendingIds?: Set<string>;
+  /** Shows the date rail for jumping across a long library. */
+  scrubber?: boolean;
 }
 
 const GAP = 3;
@@ -30,40 +33,61 @@ type Row =
   | { kind: "header"; label: string; count: number; top: number; height: number }
   | { kind: "items"; items: GalleryItem[]; top: number; height: number };
 
-function useViewport(ref: React.RefObject<HTMLDivElement>) {
-  const [state, setState] = useState({ width: 0, scrollY: 0, height: 0 });
+/** Quantise the scroll position so a render happens per step, not per pixel. */
+const SCROLL_STEP = 60;
 
+function useViewport(ref: React.RefObject<HTMLDivElement>) {
+  const [box, setBox] = useState({ width: 0, top: 0, height: 0 });
+  const [scrollY, setScrollY] = useState(0);
+
+  // Geometry changes only on resize — never while scrolling.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-
-    let frame = 0;
-    const measure = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        setState({
-          width: el.clientWidth,
-          // The page itself scrolls, so position the window against the element.
-          scrollY: -el.getBoundingClientRect().top,
-          height: window.innerHeight,
-        });
+    const remeasure = () => {
+      const r = el.getBoundingClientRect();
+      setBox({
+        width: el.clientWidth,
+        top: r.top + window.scrollY,
+        height: window.innerHeight,
       });
     };
-
-    measure();
-    const ro = new ResizeObserver(measure);
+    remeasure();
+    const ro = new ResizeObserver(remeasure);
     ro.observe(el);
-    window.addEventListener("scroll", measure, { passive: true });
-    window.addEventListener("resize", measure);
+    window.addEventListener("resize", remeasure);
+    window.addEventListener("orientationchange", remeasure);
     return () => {
-      cancelAnimationFrame(frame);
       ro.disconnect();
-      window.removeEventListener("scroll", measure);
-      window.removeEventListener("resize", measure);
+      window.removeEventListener("resize", remeasure);
+      window.removeEventListener("orientationchange", remeasure);
     };
   }, [ref]);
 
-  return state;
+  // Scrolling reads window.scrollY only. Calling getBoundingClientRect() here
+  // forced a full synchronous layout of thousands of positioned tiles on every
+  // frame — that was the stutter, not the images.
+  useEffect(() => {
+    let frame = 0;
+    const onScroll = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        setScrollY((prev) => {
+          const next = window.scrollY;
+          return Math.abs(next - prev) >= SCROLL_STEP ? next : prev;
+        });
+      });
+    };
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", onScroll);
+    };
+  }, []);
+
+  return { width: box.width, height: box.height, scrollY: scrollY - box.top, gridTop: box.top };
 }
 
 /**
@@ -82,9 +106,10 @@ export function PhotoGrid({
   onToggleSelect,
   onEnterSelection,
   pendingIds,
+  scrubber = true,
 }: PhotoGridProps) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const { width, scrollY, height } = useViewport(hostRef);
+  const { width, scrollY, height, gridTop } = useViewport(hostRef);
   const cols = columnsFor(density, width);
   const selecting = selected !== null;
 
@@ -94,13 +119,27 @@ export function PhotoGrid({
     return map;
   }, [photos]);
 
-  const { rows, totalHeight } = useMemo(() => {
-    if (width === 0) return { rows: [] as Row[], totalHeight: 0 };
+  const { rows, totalHeight, marks } = useMemo(() => {
+    if (width === 0) return { rows: [] as Row[], totalHeight: 0, marks: [] as ScrubMark[] };
     const cell = (width - GAP * (cols - 1)) / cols;
     const out: Row[] = [];
+    const scrubMarks: ScrubMark[] = [];
     let top = 0;
+    let lastPeriod = "";
 
     for (const group of groupByDate(photos)) {
+      const first = group.items[0]?.date;
+      if (first) {
+        const period = `${first.getFullYear()}-${first.getMonth()}`;
+        if (period !== lastPeriod) {
+          lastPeriod = period;
+          scrubMarks.push({
+            top,
+            year: first.getFullYear(),
+            label: first.toLocaleDateString("ar", { month: "long", year: "numeric" }),
+          });
+        }
+      }
       out.push({
         kind: "header", label: group.label, count: group.items.length,
         top, height: HEADER_H,
@@ -117,7 +156,7 @@ export function PhotoGrid({
       }
       top += GAP * 2;
     }
-    return { rows: out, totalHeight: top };
+    return { rows: out, totalHeight: top, marks: scrubMarks };
   }, [photos, cols, width]);
 
   const visible = useMemo(() => {
@@ -131,6 +170,10 @@ export function PhotoGrid({
   // A long-press is followed by a click on release. Without this the
   // click would immediately toggle the item back off and exit selection.
   const suppressClick = useRef(false);
+  // After a long-press, sliding the finger keeps selecting — picking twenty
+  // photos should not mean twenty separate taps.
+  const painting = useRef(false);
+  const painted = useRef<Set<string>>(new Set());
 
   const activate = useCallback(
     (photo: GalleryItem, idx: number) => {
@@ -158,6 +201,8 @@ export function PhotoGrid({
       longPress.current = window.setTimeout(() => {
         longPress.current = null;
         suppressClick.current = true;
+        painting.current = true;
+        painted.current = new Set([photo.id]);
         void tap("medium");
         onEnterSelection?.(photo.id);
       }, 400);
@@ -171,6 +216,27 @@ export function PhotoGrid({
       longPress.current = null;
     }
   }, []);
+
+  const endPaint = useCallback(() => {
+    painting.current = false;
+    painted.current.clear();
+  }, []);
+
+  /** While painting, whichever tile is under the finger joins the selection. */
+  const paintAt = useCallback(
+    (clientX: number, clientY: number) => {
+      if (!painting.current) return;
+      const el = document
+        .elementFromPoint(clientX, clientY)
+        ?.closest<HTMLElement>("[data-photo-id]");
+      const id = el?.dataset.photoId;
+      if (!id || painted.current.has(id)) return;
+      painted.current.add(id);
+      void tap("light");
+      onToggleSelect?.(id);
+    },
+    [onToggleSelect],
+  );
 
   const cell = width > 0 ? (width - GAP * (cols - 1)) / cols : 0;
 
@@ -186,6 +252,10 @@ export function PhotoGrid({
     >
       {photos.length === 0 && emptyContent}
 
+      {scrubber && photos.length > 60 && (
+        <Scrubber marks={marks} gridTop={gridTop} gridHeight={totalHeight} />
+      )}
+
       {visible.map((row) =>
         row.kind === "header" ? (
           <div
@@ -200,7 +270,7 @@ export function PhotoGrid({
         ) : (
           <div
             key={`r-${row.items[0].id}`}
-            className="absolute inset-x-0 flex"
+            className="absolute inset-x-0 flex touch-pan-y"
             style={{ top: row.top, height: cell, gap: GAP }}
           >
             {row.items.map((photo) => {
@@ -211,9 +281,15 @@ export function PhotoGrid({
                   key={photo.id}
                   onClick={() => activate(photo, idx)}
                   onPointerDown={() => startLongPress(photo)}
-                  onPointerUp={cancelLongPress}
-                  onPointerLeave={cancelLongPress}
+                  onPointerUp={() => { cancelLongPress(); endPaint(); }}
+                  onPointerCancel={() => { cancelLongPress(); endPaint(); }}
+                  onPointerMove={(e) => {
+                    // Any real movement means this is a drag, not a long-press.
+                    if (!painting.current) cancelLongPress();
+                    else paintAt(e.clientX, e.clientY);
+                  }}
                   onContextMenu={(e) => e.preventDefault()}
+                  data-photo-id={photo.id}
                   aria-label={photo.name}
                   aria-pressed={selecting ? isSel : undefined}
                   className={cn(

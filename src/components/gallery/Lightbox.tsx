@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, Info, Share2, Trash2, X } from "lucide-react";
+import { Download, Info, Pencil, Share2, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import type { GalleryItem } from "@/lib/galleryItem";
 import { cn } from "@/lib/utils";
@@ -12,6 +12,7 @@ import {
 import { isHeic, heicUrlToJpegUrl } from "@/lib/heic";
 import { Slide } from "./Slide";
 import { Filmstrip } from "./Filmstrip";
+import { PhotoEditor } from "./PhotoEditor";
 
 interface LightboxProps {
   photos: GalleryItem[];
@@ -41,6 +42,7 @@ export function Lightbox({
   const [animating, setAnimating] = useState(false);
   const [chrome, setChrome] = useState(true);
   const [info, setInfo] = useState(false);
+  const [editing, setEditing] = useState(false);
   const drag = useRef<{ x: number; y: number; active: boolean } | null>(null);
 
   const go = useCallback(
@@ -65,7 +67,7 @@ export function Lightbox({
     return () => window.removeEventListener("keydown", onKey);
   }, [index, go, close]);
 
-  useEffect(() => { setDx(0); setInfo(false); }, [index]);
+  useEffect(() => { setDx(0); setInfo(false); setEditing(false); }, [index]);
 
   // ---- swipe -----------------------------------------------------------------
   const onPointerDown = (e: React.PointerEvent) => {
@@ -180,6 +182,10 @@ export function Lightbox({
   const w = typeof window !== "undefined" ? window.innerWidth : 0;
   const neighbours = [index - 1, index, index + 1].filter((i) => i >= 0 && i < photos.length);
 
+  if (editing) {
+    return <PhotoEditor photo={photo} onClose={() => setEditing(false)} />;
+  }
+
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-black">
       {/* Track: prev / current / next move together with the finger. */}
@@ -250,6 +256,13 @@ export function Lightbox({
 
         <div className="pointer-events-auto flex items-center justify-around px-6 pb-2 pt-3">
           <Action icon={Share2} label="مشاركة" onClick={share} />
+          {photo.kind !== "video" && (
+            <Action
+              icon={Pencil}
+              label="تعديل"
+              onClick={() => { void tap("medium"); setEditing(true); }}
+            />
+          )}
           {showDownload && <Action icon={Download} label="حفظ" onClick={download} />}
           {onDelete && (
             <Action
