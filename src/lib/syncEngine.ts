@@ -237,7 +237,13 @@ async function uploadOne(
  * something was actually left in flight, so a healthy app never pays for it.
  */
 async function settleInterruptedUploads(chatId: string): Promise<number> {
-  const rows = await photoDb.uploads.where("chatId").equals(chatId).toArray();
+  const all = await photoDb.uploads.where("chatId").equals(chatId).toArray();
+  // Only rows old enough to be genuinely abandoned. A pass that just aborted
+  // leaves one row per file it had in flight, and the next pass follows five
+  // seconds later — scanning the channel each time would cost six API calls
+  // every five seconds and earn flood-waits of its own. A retry that succeeds
+  // clears its own row long before this.
+  const rows = all.filter((r) => Date.now() - r.startedAt > 90_000);
   if (rows.length === 0) return 0;
 
   let found: Map<string, number>;
@@ -481,8 +487,19 @@ export async function runSyncCycle(): Promise<{ processed: number; failed: numbe
     void stopSyncForegroundService();
     return { processed: 0, failed: 0 };
   }
-  if (!(await isOnline())) return { processed: 0, failed: 0 };
-  if (settings.wifiOnly && !(await isWifi())) return { processed: 0, failed: 0 };
+  // Same demotion as above whenever the pass cannot run. A backlog keeps the
+  // service in its active state — five-second heartbeats — and without this a
+  // night with no Wi-Fi would tick, wake the page and hold the locks until
+  // morning. The `online` event, the idle heartbeat and coming back to the app
+  // all restart it.
+  if (!(await isOnline())) {
+    void stopSyncForegroundService();
+    return { processed: 0, failed: 0 };
+  }
+  if (settings.wifiOnly && !(await isWifi())) {
+    void stopSyncForegroundService();
+    return { processed: 0, failed: 0 };
+  }
 
   const { getSavedTarget } = await import("@/lib/providers/mtproto");
   const target = await getSavedTarget();
@@ -674,9 +691,14 @@ export async function runSyncCycle(): Promise<{ processed: number; failed: numbe
   // Only announce the end of a queue that actually ended. A pass that stopped
   // half way will be resumed by the next heartbeat and must stay quiet.
   if (queued - done - failed <= 0 && (done > 0 || failed > 0)) {
+    const { legacyFallbackCount } = await import("@/lib/providers/mtproto");
+    // Should always be zero. If it is not, the streaming uploader is producing
+    // something Telegram rejects and the slow path is carrying the backup.
+    const fellBack = legacyFallbackCount();
     void notify(
       failed > 0 ? "انتهت المزامنة مع أخطاء" : "اكتملت المزامنة 🎉",
-      failed > 0 ? `${done} نجحت · ${failed} فشلت` : `رُفعت ${done} عنصراً`,
+      (failed > 0 ? `${done} نجحت · ${failed} فشلت` : `رُفعت ${done} عنصراً`) +
+        (fellBack > 0 ? ` · ${fellBack} بالمسار الاحتياطي` : ""),
     );
   }
   return { processed: done, failed };

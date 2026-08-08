@@ -450,21 +450,71 @@ export async function uploadToTarget(
   const c = client as any;
   const entity = await resolveEntity(c, target);
 
-  const handle = await uploadInParts(c, file, file.name, onProgress, opts?.isCancelled);
+  let msg: { id: unknown };
+  try {
+    const handle = await uploadInParts(c, file, file.name, onProgress, opts?.isCancelled);
 
-  // sendFile short-circuits when it is handed an already-uploaded file handle:
-  // no second read of the bytes, and the filename attribute is taken from the
-  // handle's own `name`.
-  const msg = await withFloodRetry<{ id: unknown }>(() =>
+    // sendFile short-circuits when it is handed an already-uploaded file
+    // handle: no second read of the bytes, and the filename attribute is taken
+    // from the handle's own `name`.
+    msg = await withFloodRetry<{ id: unknown }>(() =>
+      c.sendFile(entity, {
+        file: handle,
+        forceDocument: true,
+        // Caption carries the original capture timestamp so the gallery can
+        // show the real date instead of the Telegram upload date.
+        caption,
+      }),
+    );
+  } catch (e) {
+    if (!isPartError(e) || file.size > LEGACY_FALLBACK_MAX) throw e;
+    // Insurance. If Telegram rejects the parts this app assembled, fall back to
+    // the path gramjs drives itself — slower and memory-hungry, which is why it
+    // is capped by size, but a working backup beats a correct one that is not
+    // running. If this ever shows up in the log, the streaming path is wrong.
+    legacyFallbacks++;
+    msg = await sendViaGramjs(c, entity, file, onProgress, caption);
+  }
+  return { messageId: Number(msg.id), chatId: target.id };
+}
+
+/** Errors that mean "the assembled file was not acceptable". */
+function isPartError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e ?? "");
+  return /FILE_PART|FILE_PARTS_INVALID|MEDIA_INVALID|FILE_REFERENCE/i.test(msg);
+}
+
+/** Files above this are never retried the old way — it buffers the whole file. */
+const LEGACY_FALLBACK_MAX = 64 * 1024 * 1024;
+
+let legacyFallbacks = 0;
+
+/** How many uploads had to fall back. Non-zero means the fast path is broken. */
+export function legacyFallbackCount(): number {
+  return legacyFallbacks;
+}
+
+async function sendViaGramjs(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  c: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  entity: any,
+  file: File,
+  onProgress?: (fraction: number) => void,
+  caption?: string,
+): Promise<{ id: unknown }> {
+  const { CustomFile } = await import("telegram/client/uploads");
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const custom = new CustomFile(file.name, bytes.length, file.name, bytes as unknown as Buffer);
+  return withFloodRetry<{ id: unknown }>(() =>
     c.sendFile(entity, {
-      file: handle,
+      file: custom,
       forceDocument: true,
-      // Caption carries the original capture timestamp so the gallery can show
-      // the real date instead of the Telegram upload date.
       caption,
+      workers: file.size > LARGE_FILE_THRESHOLD ? 4 : 1,
+      progressCallback: onProgress ? (p: number) => onProgress(p) : undefined,
     }),
   );
-  return { messageId: Number(msg.id), chatId: target.id };
 }
 
 /** Wait out a flood-wait on the message send itself, not just on the parts. */
