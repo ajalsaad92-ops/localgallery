@@ -39,9 +39,16 @@ export function SyncScreen({ onSelectionChange }: { onSelectionChange?: (on: boo
 
   useEffect(() => onSelectionChange?.(sel.selecting), [sel.selecting, onSelectionChange]);
 
+  // "Waiting" means waiting for the channel that is selected now — a photo
+  // backed up to a different channel is not backed up to this one.
   const pendingIds = useMemo(
-    () => new Set(assets.filter((a) => a.syncedAt == null).map((a) => a.id)),
-    [assets],
+    () =>
+      new Set(
+        assets
+          .filter((a) => !(a.syncedAt != null && target && a.remoteChatId === target.id))
+          .map((a) => a.id),
+      ),
+    [assets, target],
   );
 
   const selectedIds = useMemo(() => (sel.selected ? [...sel.selected] : []), [sel.selected]);

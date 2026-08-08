@@ -93,6 +93,22 @@ export function SettingsPage({ onBack }: Props) {
 
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                ملفات تُرفع معاً: {settings.parallelUploads}
+              </label>
+              <input
+                type="range" min={1} max={10} step={1}
+                value={settings.parallelUploads}
+                onChange={(e) => setSyncSettings({ parallelUploads: Number(e.target.value) })}
+                className="w-full accent-primary"
+              />
+              <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
+                أعلى = أسرع على شبكة جيدة. الفيديوهات الكبيرة تُرفع بعدد أقل
+                تلقائياً لأن كل ملف يُحمَّل في الذاكرة أثناء إرساله.
+              </p>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
                 أقصى حجم للملف: {Math.min(settings.maxFileMb || MAX_UPLOAD_MB, MAX_UPLOAD_MB)} م.ب
               </label>
               <input

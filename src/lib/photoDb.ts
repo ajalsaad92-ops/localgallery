@@ -58,6 +58,8 @@ export interface SyncSettings {
   paused: boolean;
   /** Drop the local blob from IndexedDB right after a successful upload. */
   freeBlobAfterSync: boolean;
+  /** How many files to send at once. Bounded by memory, not just by count. */
+  parallelUploads: number;
 }
 
 /**
@@ -73,6 +75,7 @@ export const DEFAULT_SYNC_SETTINGS: SyncSettings = {
   maxFileMb: MAX_UPLOAD_MB,
   paused: false,
   freeBlobAfterSync: true,
+  parallelUploads: 4,
 };
 
 class PhotoDatabase extends Dexie {

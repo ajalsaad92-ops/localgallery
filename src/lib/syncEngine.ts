@@ -157,10 +157,63 @@ async function uploadOne(
   await photoDb.assets.update(asset.id, patch);
 }
 
-/** Number of device assets still waiting to be uploaded. */
+/**
+ * Has this file already reached *this* channel?
+ *
+ * `syncedAt` alone is not enough: it only says the file went somewhere. Pick a
+ * different channel and every photo still looked uploaded, so nothing was sent
+ * and the new channel stayed empty while the counters claimed otherwise.
+ */
+function isInChannel(a: MediaAsset, chatId: string): boolean {
+  return a.syncedAt != null && a.remoteChatId === chatId;
+}
+
+/** Device assets still waiting to reach the selected channel. */
 export async function pendingCount(): Promise<number> {
+  const { getSavedTarget } = await import("@/lib/providers/mtproto");
+  const target = await getSavedTarget();
   const rows = await photoDb.assets.where("provider").equals("device").toArray();
-  return rows.filter((a) => a.syncedAt == null && (a.blob || a.localUri)).length;
+  return rows.filter(
+    (a) => (a.blob || a.localUri) && !(target && isInChannel(a, target.id)),
+  ).length;
+}
+
+/** Runs tasks with a bounded number in flight, plus a cap on bytes in memory. */
+export async function runPool<T>(
+  items: T[],
+  sizeOf: (item: T) => number,
+  worker: (item: T) => Promise<void>,
+  opts: { concurrency: number; maxBytesInFlight: number; stop: () => boolean },
+) {
+  let next = 0;
+  let bytesInFlight = 0;
+  const active = new Set<Promise<void>>();
+
+  const launch = (item: T) => {
+    const bytes = sizeOf(item);
+    bytesInFlight += bytes;
+    const p = worker(item).finally(() => {
+      bytesInFlight -= bytes;
+      active.delete(p);
+    });
+    active.add(p);
+  };
+
+  while (next < items.length && !opts.stop()) {
+    const item = items[next];
+    const bytes = sizeOf(item);
+    // Always allow one, otherwise a single huge file would deadlock the pool.
+    const room =
+      active.size === 0 ||
+      (active.size < opts.concurrency && bytesInFlight + bytes <= opts.maxBytesInFlight);
+    if (!room) {
+      await Promise.race(active);
+      continue;
+    }
+    next++;
+    launch(item);
+  }
+  await Promise.all(active);
 }
 
 export async function runSyncCycle(): Promise<{ processed: number; failed: number }> {
@@ -177,105 +230,129 @@ export async function runSyncCycle(): Promise<{ processed: number; failed: numbe
   if (!(await isOnline())) return { processed: 0, failed: 0 };
   if (settings.wifiOnly && !(await isWifi())) return { processed: 0, failed: 0 };
 
-  // The upload target must be linked before anything is queued. The client is
-  // built lazily so an idle app never opens a Telegram connection.
-  const { getSavedTarget, getClient } = await import("@/lib/providers/mtproto");
+  const { getSavedTarget } = await import("@/lib/providers/mtproto");
   const target = await getSavedTarget();
   if (!target) return { processed: 0, failed: 0 };
 
   // Claim the run before the slow client acquisition — a reconnect can take
-  // minutes, and ticks keep arriving the whole time.
+  // minutes and ticks keep arriving throughout.
+  //
+  // Everything below is inside try/finally. The flag used to be raised before
+  // an unguarded stretch of database work: one throw there left it up forever,
+  // so every later cycle exited at the guard above and uploading simply
+  // stopped until the app was restarted.
   emit({ running: true });
-  let client: unknown = null;
-  try {
-    client = await getClient();
-  } catch {
-    emit({ running: false });
-    return { processed: 0, failed: 0 };
-  }
-  if (!client) {
-    emit({ running: false });
-    return { processed: 0, failed: 0 };
-  }
-
-  const allAssets = await photoDb.assets.toArray();
-  // Everything already on Telegram, keyed by content, so a re-indexed copy of
-  // the same file is retired instead of uploaded twice.
-  const uploaded = new Set(
-    allAssets
-      .filter((a) => a.syncedAt != null || a.remoteMessageId != null)
-      .map((a) => a.contentKey ?? contentKeyOf(a)),
-  );
-
-  const candidates = allAssets.filter(
-    (a) => a.provider === "device" && a.syncedAt == null && (a.blob || a.localUri),
-  );
-
-  const queue: MediaAsset[] = [];
-  for (const a of candidates) {
-    const key = a.contentKey ?? contentKeyOf(a);
-    if (uploaded.has(key)) {
-      await photoDb.assets.update(a.id, {
-        syncedAt: Date.now(),
-        blob: undefined,
-        contentKey: key,
-      });
-      continue;
-    }
-    uploaded.add(key);
-    queue.push(a);
-  }
-  if (queue.length === 0) {
-    emit({ running: false });
-    return { processed: 0, failed: 0 };
-  }
-
-  emit({
-    running: true, total: queue.length, done: 0, failed: 0,
-    currentName: undefined, currentFraction: undefined, lastError: undefined,
-  });
-  void startSyncForegroundService("جارٍ رفع صورك", `0 / ${queue.length}`);
-
   let done = 0;
   let failed = 0;
-  try {
-    for (const asset of queue) {
-      const now = await getSyncSettings();
-      if (now.paused) break;
 
-      if (now.maxFileMb > 0 && asset.size > now.maxFileMb * 1024 * 1024) {
-        failed++;
-        emit({ failed, lastError: `أكبر من الحد (${now.maxFileMb} م.ب): ${asset.name}` });
+  try {
+    const { getClient, resetClient } = await import("@/lib/providers/mtproto");
+    const client = await getClient().catch(() => null);
+    if (!client) return { processed: 0, failed: 0 };
+
+    const allAssets = await photoDb.assets.toArray();
+
+    // Only what is in THIS channel counts as uploaded. Picking a different
+    // channel has to start its own backup rather than inherit the last one's,
+    // which is why an empty channel used to stay empty while the counters
+    // insisted everything was already done.
+    const here = new Set(
+      allAssets
+        .filter(
+          (a) =>
+            (a.provider === "telegram-remote" && a.remoteChatId === target.id) ||
+            isInChannel(a, target.id),
+        )
+        .map((a) => a.contentKey ?? contentKeyOf(a)),
+    );
+
+    const candidates = allAssets.filter(
+      (a) => a.provider === "device" && (a.blob || a.localUri) && !isInChannel(a, target.id),
+    );
+
+    const queue: MediaAsset[] = [];
+    for (const a of candidates) {
+      const key = a.contentKey ?? contentKeyOf(a);
+      if (here.has(key)) {
+        // Already in this channel under another id — adopt it, don't resend.
+        await photoDb.assets.update(a.id, {
+          syncedAt: Date.now(),
+          remoteChatId: target.id,
+          blob: undefined,
+          contentKey: key,
+        });
         continue;
       }
-
-      emit({ currentName: asset.name, currentFraction: 0 });
-      void updateSyncForegroundService(
-        "جارٍ رفع صورك",
-        `${done + 1} من ${queue.length} · ${asset.name}`,
-        done,
-        queue.length,
-      );
-
-      try {
-        await uploadOne(asset, now.freeBlobAfterSync, (f) => emit({ currentFraction: f }));
-        done++;
-        emit({ done, currentFraction: 1 });
-      } catch (e) {
-        failed++;
-        const msg = e instanceof Error ? e.message : String(e);
-        emit({ failed, lastError: msg });
-
-        // A dropped socket fails every remaining item in milliseconds and would
-        // burn the whole queue. Rebuild the client and stop this pass; the
-        // heartbeat starts a fresh one with a healthy connection.
-        if (/disconnect|not connected|timeout|network|socket/i.test(msg)) {
-          const { resetClient } = await import("@/lib/providers/mtproto");
-          await resetClient();
-          break;
-        }
-      }
+      here.add(key);
+      queue.push(a);
     }
+    if (queue.length === 0) return { processed: 0, failed: 0 };
+
+    emit({
+      running: true, total: queue.length, done: 0, failed: 0,
+      currentName: undefined, currentFraction: undefined, lastError: undefined,
+    });
+    void startSyncForegroundService("جارٍ رفع صورك", `0 / ${queue.length}`);
+
+    let abort = false;
+    const fractions = new Map<string, number>();
+    const report = () => {
+      // Several files are in flight, so the shown percentage is their mean.
+      const vals = [...fractions.values()];
+      emit({
+        done, failed,
+        currentFraction: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : undefined,
+      });
+    };
+
+    await runPool(
+      queue,
+      (a) => Math.max(a.size || 0, 1),
+      async (asset) => {
+        const now = await getSyncSettings();
+        if (now.paused) { abort = true; return; }
+
+        if (now.maxFileMb > 0 && asset.size > now.maxFileMb * 1024 * 1024) {
+          failed++;
+          emit({ failed, lastError: `أكبر من الحد (${now.maxFileMb} م.ب): ${asset.name}` });
+          return;
+        }
+
+        emit({ currentName: asset.name });
+        fractions.set(asset.id, 0);
+        try {
+          await uploadOne(asset, now.freeBlobAfterSync, (f) => {
+            fractions.set(asset.id, f);
+            report();
+          });
+          done++;
+          void updateSyncForegroundService(
+            "جارٍ رفع صورك", `${done} من ${queue.length}`, done, queue.length,
+          );
+        } catch (e) {
+          failed++;
+          const msg = e instanceof Error ? e.message : String(e);
+          emit({ failed, lastError: msg });
+          // A dropped socket fails every remaining item in milliseconds.
+          // Rebuild the client and end this pass; the heartbeat starts a
+          // healthy one.
+          if (/disconnect|not connected|timeout|network|socket/i.test(msg)) {
+            abort = true;
+            await resetClient();
+          }
+        } finally {
+          fractions.delete(asset.id);
+          report();
+        }
+      },
+      {
+        concurrency: Math.max(1, Math.min(10, settings.parallelUploads)),
+        // gramjs buffers each file in memory, so bound the total in flight no
+        // matter how many slots are free.
+        maxBytesInFlight: 192 * 1024 * 1024,
+        stop: () => abort,
+      },
+    );
   } finally {
     emit({ running: false, currentName: undefined, currentFraction: undefined });
     void stopSyncForegroundService();

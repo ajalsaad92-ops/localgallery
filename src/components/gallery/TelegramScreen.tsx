@@ -34,16 +34,23 @@ export function TelegramScreen() {
   );
   const view = useGalleryView(assets, { urlFor });
 
+  // Re-check on every mount: the channel can be changed from Settings while
+  // this screen is alive, and its contents must follow.
   useEffect(() => {
     let alive = true;
-    void (async () => {
+    const check = async () => {
       const t = await getSavedTarget();
       const c = await getClient().catch(() => null);
       if (!alive) return;
-      setTarget(t);
+      setTarget((prev) => {
+        if (prev?.id !== t?.id) setAutoRan(false);
+        return t;
+      });
       setReady(!!t && !!c);
-    })();
-    return () => { alive = false; };
+    };
+    void check();
+    const id = window.setInterval(() => void check(), 4000);
+    return () => { alive = false; window.clearInterval(id); };
   }, []);
 
   const runImport = useCallback(async (announce: boolean) => {
