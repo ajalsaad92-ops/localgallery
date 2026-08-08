@@ -24,6 +24,33 @@ async function catchUp() {
   }
 }
 
+const PURGE_FLAG = "thumbs:purged:v1";
+
+/**
+ * One-time repair for previews that are really whole files.
+ *
+ * A thumbnail request that asked for a size a message did not have made gramjs
+ * return the original document, and it was stored base64-encoded — which is
+ * where the app's gigabytes of "data" went. Runs once, in the background, well
+ * after the first paint.
+ */
+async function repairThumbStore() {
+  try {
+    const { photoDb } = await import("@/lib/photoDb");
+    if ((await photoDb.kv.get(PURGE_FLAG))?.value) return;
+    const { purgeOversizedThumbs } = await import("@/lib/remoteThumbs");
+    const { removed, bytes } = await purgeOversizedThumbs();
+    await photoDb.kv.put({ key: PURGE_FLAG, value: "1" });
+    if (removed > 0) {
+      toast.success(
+        `حُرِّر ${(bytes / 1073741824).toFixed(2)} غ.ب — ${removed} «معاينة» كانت ملفات كاملة`,
+      );
+    }
+  } catch {
+    /* best effort — never block startup */
+  }
+}
+
 export function useNativeInit() {
   useEffect(() => {
     if (!isNative()) return;
@@ -36,6 +63,8 @@ export function useNativeInit() {
     })();
 
     const first = window.setTimeout(() => { void catchUp(); }, 800);
+    // After the UI has settled — this walks the preview table.
+    const repair = window.setTimeout(() => { void repairThumbStore(); }, 4000);
 
     const appSub = App.addListener("appStateChange", (s) => {
       if (!s.isActive) return;
@@ -54,6 +83,7 @@ export function useNativeInit() {
 
     return () => {
       window.clearTimeout(first);
+      window.clearTimeout(repair);
       void appSub.then((h) => h.remove()).catch(() => undefined);
       void netSub.then((h) => h.remove()).catch(() => undefined);
     };

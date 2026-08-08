@@ -1159,13 +1159,54 @@ writeIfChanged(
   `package ${APP_ID};
 
 import android.os.Bundle;
+import android.webkit.RenderProcessGoneDetail;
+import android.webkit.WebView;
+
 import com.getcapacitor.BridgeActivity;
+import com.getcapacitor.WebViewListener;
 
 public class MainActivity extends BridgeActivity {
+    /** Guards against a reload loop when the renderer dies immediately. */
+    private static int rendererRestarts = 0;
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(LocalGalleryMediaPlugin.class);
         super.onCreate(savedInstanceState);
+        installRendererGuard();
+    }
+
+    /**
+     * Survive the WebView's renderer being killed.
+     *
+     * Capacitor's client returns false from onRenderProcessGone unless a
+     * listener says otherwise, and false tells the framework to kill the app
+     * process — which is what "the app opens and closes again" looks like from
+     * the outside, with nothing in the UI to explain it. A phone under memory
+     * pressure kills that process first, so this has to be survivable: take
+     * the callback, and rebuild the activity instead of dying.
+     */
+    private void installRendererGuard() {
+        try {
+            if (bridge == null) return;
+            bridge.addWebViewListener(new WebViewListener() {
+                @Override
+                public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                    if (rendererRestarts >= 3) {
+                        // Something is wrong that a reload will not fix; let it
+                        // go rather than spin forever.
+                        return false;
+                    }
+                    rendererRestarts++;
+                    runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            try { recreate(); } catch (Exception ignored) {}
+                        }
+                    });
+                    return true;
+                }
+            });
+        } catch (Exception ignored) {}
     }
 
     // Android suspends the WebView's JS timers once the activity leaves the

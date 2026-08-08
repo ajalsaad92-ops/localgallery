@@ -66,12 +66,17 @@ export function TelegramScreen() {
     };
   }, []);
 
-  const runImport = useCallback(async (announce: boolean) => {
+  const runImport = useCallback(async (announce: boolean, withThumbs: boolean) => {
     setBusy(true);
     try {
       const n = await importChannelHistory(0);
       if (announce) toast.success(`قرأت ${n} عنصراً`);
       setBusy(false);
+      // Downloading thousands of previews is heavy enough to get the WebView's
+      // renderer killed, and it used to start on its own the moment this tab
+      // was shown — which, because the app reopens on the last tab, meant it
+      // started before the user could do anything. It runs on a tap now.
+      if (!withThumbs) return;
       setThumbs({ done: 0, total: 0 });
       await hydrateThumbnails((done, total) => setThumbs({ done, total }));
     } catch (e) {
@@ -85,7 +90,7 @@ export function TelegramScreen() {
   useEffect(() => {
     if (!ready || autoRan) return;
     setAutoRan(true);
-    void runImport(false);
+    void runImport(false, false);
   }, [ready, autoRan, runImport]);
 
   /** Remote bytes are streamed on demand, only when an item is opened. */
@@ -138,7 +143,7 @@ export function TelegramScreen() {
             <p className="mt-0.5 truncate text-sm font-semibold text-muted-foreground">{subtitle}</p>
           </div>
           <button
-            onClick={() => { void tap("medium"); void runImport(true); }}
+            onClick={() => { void tap("medium"); void runImport(true, true); }}
             disabled={!ready || busy}
             className="press flex shrink-0 items-center gap-2 rounded-full bg-hot px-5 py-3 text-sm font-black text-primary-foreground shadow-[var(--shadow-fab)] disabled:opacity-40 disabled:shadow-none"
           >

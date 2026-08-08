@@ -800,18 +800,50 @@ export async function fetchMessageThumb(messageId: number): Promise<string | nul
     m = fetched;
     msgCache.set(messageId, m);
   }
-  // Index 0 is the *stripped* thumbnail — a couple of dozen pixels meant as a
-  // blur placeholder. Reading it first is why the channel grid looked like
-  // smeared paint. Walk down from the largest cached size instead and take the
-  // first one that decodes; -1 is gramjs's "biggest available".
-  for (const thumb of [-1, 2, 1, 0]) {
+  /*
+   * NEVER pass a bare index here.
+   *
+   * gramjs resolves a numeric `thumb` with `correctThumbs[thumb]`, and when
+   * that lands outside the array it returns undefined — at which point
+   * `_downloadDocument` does not stop. It carries on with `thumbSize: ""` and
+   * `fileSize: doc.size`, i.e. it downloads the **entire file** and hands it
+   * back as a "thumbnail". Everything in this channel is sent as a document,
+   * so asking for a size a message did not have quietly pulled whole photos
+   * and videos into IndexedDB as base64.
+   *
+   * Pick a size object that actually exists on this message instead — gramjs
+   * takes a PhotoSize and returns it untouched.
+   */
+  const doc = m.document ?? m.media?.document ?? null;
+  const photo = m.photo ?? m.media?.photo ?? null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sizes: any[] = doc?.thumbs ?? photo?.sizes ?? [];
+  if (!sizes.length) return null;
+
+  // Widest that still counts as a preview, else the biggest thing available
+  // (a stripped size is tiny but better than nothing).
+  const withWidth = sizes.filter((s) => typeof s?.w === "number");
+  const preview =
+    withWidth.filter((s) => s.w <= 800).sort((a, b) => a.w - b.w).pop() ??
+    withWidth.sort((a, b) => a.w - b.w)[0] ??
+    sizes[0];
+
+  const candidates = preview === sizes[0] ? [preview] : [preview, sizes[0]];
+  for (const thumb of candidates) {
     try {
       const buf = await c.downloadMedia(m, { thumb });
-      if (buf && buf.length) return toDataUrl(new Uint8Array(buf));
+      // A preview is never megabytes. If one ever is, something upstream
+      // handed back the original file — drop it rather than store it.
+      if (buf && buf.length && buf.length <= MAX_THUMB_BYTES) {
+        return toDataUrl(new Uint8Array(buf));
+      }
     } catch { /* next size */ }
   }
   return null;
 }
+
+/** Anything larger than this is not a thumbnail, whatever Telegram called it. */
+export const MAX_THUMB_BYTES = 512 * 1024;
 
 
 

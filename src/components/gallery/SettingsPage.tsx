@@ -252,6 +252,23 @@ function StorageSection() {
     }
   };
 
+  // Same repair the app runs once on its own, on demand.
+  const repair = async () => {
+    setWorking(true);
+    try {
+      const { purgeOversizedThumbs } = await import("@/lib/remoteThumbs");
+      const { removed, bytes: freed } = await purgeOversizedThumbs();
+      toast[removed ? "success" : "info"](
+        removed
+          ? `حُذفت ${removed} «معاينة» كانت ملفات كاملة — ${bytes(freed)}`
+          : "لا توجد معاينات معطوبة",
+      );
+      refresh();
+    } finally {
+      setWorking(false);
+    }
+  };
+
   return (
     <section className="rounded-2xl border border-border bg-card p-4">
       <div className="mb-2 flex items-center justify-between">
@@ -277,14 +294,23 @@ function StorageSection() {
         التنظيف يحذف الملفات المؤقتة والمعاينات المخزّنة فقط. لا يمسّ صورك ولا
         فهرس التطبيق — المعاينات تُنزَّل ثانية عند تصفّح القناة.
       </p>
-      <button
-        onClick={clean}
-        disabled={working}
-        className="press flex items-center gap-1.5 rounded-full bg-secondary px-4 py-2 text-sm font-semibold disabled:opacity-50"
-      >
-        {working ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-        تنظيف
-      </button>
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={clean}
+          disabled={working}
+          className="press flex items-center gap-1.5 rounded-full bg-secondary px-4 py-2 text-sm font-semibold disabled:opacity-50"
+        >
+          {working ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+          تنظيف
+        </button>
+        <button
+          onClick={repair}
+          disabled={working}
+          className="press rounded-full bg-secondary px-4 py-2 text-sm font-semibold disabled:opacity-50"
+        >
+          إصلاح المعاينات المعطوبة
+        </button>
+      </div>
     </section>
   );
 }

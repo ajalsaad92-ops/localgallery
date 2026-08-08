@@ -105,3 +105,40 @@ export async function dropRemoteThumbs(ids: string[]) {
   await photoDb.thumbs.bulkDelete(ids);
   ids.forEach((id) => { cache.delete(id); missing.delete(id); });
 }
+
+/** A real preview is tens of kilobytes; this is base64, so allow for growth. */
+const OVERSIZED = 700_000;
+
+/**
+ * Delete "previews" that are actually whole files.
+ *
+ * A thumbnail request that missed made gramjs download the original document
+ * and this table stored it, base64-encoded, row after row — gigabytes of app
+ * data and, on a phone, enough memory pressure to have Android kill the
+ * WebView's renderer, which reads as the app closing itself on launch.
+ *
+ * Walks the table one row at a time on purpose: reading it whole is the very
+ * allocation this repairs.
+ */
+export async function purgeOversizedThumbs(): Promise<{ removed: number; bytes: number }> {
+  let removed = 0;
+  let bytes = 0;
+  const doomed: string[] = [];
+
+  await photoDb.thumbs.each((row) => {
+    const size = row?.dataUrl?.length ?? 0;
+    if (size > OVERSIZED) {
+      doomed.push(row.id);
+      bytes += size;
+    }
+  });
+
+  for (let i = 0; i < doomed.length; i += 200) {
+    const batch = doomed.slice(i, i + 200);
+    await photoDb.thumbs.bulkDelete(batch);
+    batch.forEach((id) => { cache.delete(id); missing.delete(id); });
+    removed += batch.length;
+  }
+  if (removed) notifyWatchers();
+  return { removed, bytes };
+}

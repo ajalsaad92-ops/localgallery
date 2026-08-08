@@ -1,4 +1,4 @@
-import { Blob as NodeBlob } from "node:buffer";
+import { Blob as NodeBlob, Buffer } from "node:buffer";
 import { describe, expect, it } from "vitest";
 import {
   LARGE_FILE_THRESHOLD,
@@ -74,7 +74,9 @@ describe("walking a blob in parts", () => {
     const rebuilt = new Uint8Array(300 * 1024);
     let at = 0;
     for (const s of seen) { rebuilt.set(s.bytes, at); at += s.bytes.length; }
-    expect(rebuilt).toEqual(raw);
+    // Element-wise deep equality over 300k entries takes seconds and made this
+    // time out; a byte compare answers the same question immediately.
+    expect(Buffer.from(rebuilt).equals(Buffer.from(raw))).toBe(true);
   });
 
   it("reports the same total to every part", async () => {

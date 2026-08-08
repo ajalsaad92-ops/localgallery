@@ -56,7 +56,10 @@ export async function hydrateThumbnails(
 
     let done = 0;
     const queue = [...pending];
-    const workers = Array.from({ length: 4 }, async () => {
+    // Two at a time, not four. Each one is a network round trip plus a base64
+    // string in the renderer's heap, and this used to run automatically the
+    // moment the channel tab appeared.
+    const workers = Array.from({ length: 2 }, async () => {
       for (;;) {
         const a = queue.shift();
         if (!a) return;
