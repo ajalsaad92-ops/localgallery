@@ -1,30 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { contentKeyOf, type MediaAsset } from "./photoDb";
-import { runPool } from "./syncEngine";
+import { planQueue, runPool } from "./syncEngine";
 
 const asset = (over: Partial<MediaAsset>): MediaAsset => ({
   id: "x", provider: "device", name: "IMG.jpg", size: 100,
   mime: "image/jpeg", date: 1, createdAt: 0, ...over,
 });
 
-/** Mirrors isInChannel + the queue filter in runSyncCycle. */
-const inChannel = (a: MediaAsset, chat: string) =>
-  a.syncedAt != null && a.remoteChatId === chat;
-
-const queueFor = (rows: MediaAsset[], chat: string) => {
-  const here = new Set(
-    rows
-      .filter((a) => (a.provider === "telegram-remote" && a.remoteChatId === chat) || inChannel(a, chat))
-      .map((a) => a.contentKey ?? contentKeyOf(a)),
-  );
-  return rows.filter(
-    (a) =>
-      a.provider === "device" &&
-      (a.blob || a.localUri) &&
-      !inChannel(a, chat) &&
-      !here.has(a.contentKey ?? contentKeyOf(a)),
-  );
-};
+const queueFor = (rows: MediaAsset[], chat: string) => planQueue(rows, chat).queue;
 
 describe("per-channel backup", () => {
   const rows = [
@@ -49,6 +32,64 @@ describe("per-channel backup", () => {
       asset({ id: "tgm-new-1", provider: "telegram-remote", remoteChatId: "new", contentKey: key }),
     ];
     expect(queueFor(withRemote, "new")).toEqual([]);
+    expect(planQueue(withRemote, "new").adopt.map((a) => a.asset.id)).toEqual(["d9"]);
+  });
+});
+
+describe("duplicate protection", () => {
+  it("does not resend when the channel copy has a different date", () => {
+    // The remote row was read back from a message with no #lgk caption, so its
+    // key was derived from the filename — a date that need not match the one
+    // MediaStore reports for the same file.
+    const rows = [
+      asset({ id: "d1", localUri: "u1", name: "IMG_20240501_120000.jpg", size: 2048, date: 111 }),
+      asset({
+        id: "tgm-c-9", provider: "telegram-remote", remoteChatId: "c",
+        name: "IMG_20240501_120000.jpg", size: 2048, date: 222,
+      }),
+    ];
+    expect(queueFor(rows, "c")).toEqual([]);
+  });
+
+  it("sends the same photo once when the phone indexed it twice", () => {
+    const rows = [
+      asset({ id: "d1", localUri: "u1", name: "IMG_9.jpg", size: 5000, date: 10 }),
+      asset({ id: "d2", localUri: "u2", name: "IMG_9.jpg", size: 5000, date: 11 }),
+    ];
+    expect(queueFor(rows, "c").map((r) => r.id)).toEqual(["d1"]);
+  });
+
+  it("still sends a different photo that happens to share a name", () => {
+    const rows = [
+      asset({ id: "d1", localUri: "u1", name: "IMG_9.jpg", size: 5000 }),
+      asset({
+        id: "tgm-c-9", provider: "telegram-remote", remoteChatId: "c",
+        name: "IMG_9.jpg", size: 4096,
+      }),
+    ];
+    expect(queueFor(rows, "c").map((r) => r.id)).toEqual(["d1"]);
+  });
+
+  it("trusts a stamped key over a name collision", () => {
+    // Same name and size, but the channel copy carries this app's own key for
+    // *another* file — the loose match must not swallow this upload.
+    const rows = [
+      asset({ id: "d1", localUri: "u1", name: "IMG_9.jpg", size: 5000, date: 10 }),
+      asset({
+        id: "tgm-c-9", provider: "telegram-remote", remoteChatId: "c",
+        name: "IMG_9.jpg", size: 5000, contentKey: "IMG_9.jpg|5000|999",
+      }),
+    ];
+    expect(queueFor(rows, "c").map((r) => r.id)).toEqual(["d1"]);
+  });
+
+  it("leaves files with no bytes and blocked files out of the queue", () => {
+    const rows = [
+      asset({ id: "d0", name: "gone.jpg" }), // no blob, no localUri
+      asset({ id: "d1", localUri: "u1", name: "bad.jpg" }),
+      asset({ id: "d2", localUri: "u2", name: "ok.jpg" }),
+    ];
+    expect(planQueue(rows, "c", (id) => id === "d1").queue.map((r) => r.id)).toEqual(["d2"]);
   });
 });
 
@@ -76,6 +117,41 @@ describe("upload pool", () => {
       bytes -= b;
     }, { concurrency: 10, maxBytesInFlight: 120, stop: () => false });
     expect(peak).toBeLessThanOrEqual(120);
+  });
+
+  it("caps whole files held open, not just heap", async () => {
+    // Streaming made the heap cost tiny, so this is the budget that actually
+    // decides how many large videos start together.
+    let raw = 0;
+    let peak = 0;
+    const items = [40, 40, 40, 40, 40];
+    await runPool(items, () => 1, async (b) => {
+      raw += b; peak = Math.max(peak, raw);
+      await new Promise((r) => setTimeout(r, 5));
+      raw -= b;
+    }, {
+      concurrency: 100, maxBytesInFlight: 1e9, stop: () => false,
+      rawOf: (b) => b, maxRawInFlight: 100,
+    });
+    expect(peak).toBeLessThanOrEqual(100);
+  });
+
+  it("lets a hundred small files run at once", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const items = Array.from({ length: 100 }, () => 3 * 1024 * 1024);
+    await runPool(items, () => 128 * 1024 * 2, async () => {
+      inFlight++; peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 2));
+      inFlight--;
+    }, {
+      concurrency: 100,
+      maxBytesInFlight: 96 * 1024 * 1024,
+      rawOf: (b) => b,
+      maxRawInFlight: 320 * 1024 * 1024,
+      stop: () => false,
+    });
+    expect(peak).toBe(100);
   });
 
   it("still runs a single item larger than the whole budget", async () => {

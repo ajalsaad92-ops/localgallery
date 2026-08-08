@@ -200,6 +200,14 @@ public class LocalGalleryMediaPlugin extends Plugin {
             @Override public void onReceive(Context c, Intent i) {
                 String action = i.getStringExtra("action");
                 if (action == null) return;
+                // Every heartbeat re-asserts the page's visibility. Doing it
+                // only in onPause/onStop was not enough: the framework, a
+                // configuration change or Chromium itself can flip the page
+                // back to hidden at any point, and from then on the queue
+                // crawls at one timer tick a minute.
+                if (!"stop".equals(action)) {
+                    try { WebKeepAlive.assertVisible(getBridge().getWebView()); } catch (Exception ignored) {}
+                }
                 JSObject data = new JSObject();
                 data.put("action", action);
                 notifyListeners("syncCommand", data);
@@ -651,6 +659,10 @@ public class LocalGalleryMediaPlugin extends Plugin {
     public void setBackgroundSync(PluginCall call) {
         boolean enabled = Boolean.TRUE.equals(call.getBoolean("enabled", false));
         SyncForegroundService.setArmed(getContext(), enabled);
+        try {
+            if (enabled) WebKeepAlive.assertVisible(getBridge().getWebView());
+            else WebKeepAlive.release(getBridge().getWebView());
+        } catch (Exception ignored) {}
         Intent svc = new Intent(getContext(), SyncForegroundService.class);
         if (enabled) {
             svc.setAction("IDLE");
@@ -712,6 +724,8 @@ public class SyncForegroundService extends Service {
 
     private boolean paused = false;
     private boolean active = false;
+    /** Mirrors the active flag for callers outside the service. */
+    private static volatile boolean busy = false;
     private BroadcastReceiver receiver;
     private android.os.PowerManager.WakeLock wakeLock;
     private android.net.wifi.WifiManager.WifiLock wifiLock;
@@ -726,6 +740,11 @@ public class SyncForegroundService extends Service {
     public static boolean isArmed(Context ctx) {
         return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                   .getBoolean(KEY_ARMED, false);
+    }
+
+    /** True while a queue is being uploaded, armed or not (manual runs count). */
+    public static boolean isBusy() {
+        return busy;
     }
 
     @Override
@@ -859,12 +878,29 @@ public class SyncForegroundService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
 
+        // START_STICKY hands back a null intent when Android recreates the
+        // service after killing it. Treat that as "keep watching" — falling
+        // through to the START branch would claim a queue is running and show
+        // a stale progress bar forever.
+        if (intent == null) {
+            active = false;
+            busy = false;
+            goForeground();
+            if (!isArmed(getApplicationContext())) {
+                stopForeground(true);
+                stopSelf();
+                return START_NOT_STICKY;
+            }
+            return START_STICKY;
+        }
+
         // A service launched with startForegroundService() MUST call
         // startForeground() within a few seconds or Android kills the process
         // with ForegroundServiceDidNotStartInTimeException — even if the very
         // next thing it does is stop itself. So promote first, decide after.
         if ("STOP".equals(action)) {
             active = false;
+            busy = false;
             goForeground();
             setArmed(getApplicationContext(), false);
             stopForeground(true);
@@ -874,6 +910,7 @@ public class SyncForegroundService extends Service {
 
         if ("IDLE".equals(action)) {
             active = false;
+            busy = false;
             title = "مزامنة الصور";
             text = "بانتظار صور جديدة";
             progress = 0; max = 0;
@@ -889,6 +926,7 @@ public class SyncForegroundService extends Service {
 
         // START / UPDATE — an upload queue is running.
         active = true;
+        busy = true;
         if (intent != null) {
             if (intent.getStringExtra("title") != null) title = intent.getStringExtra("title");
             if (intent.getStringExtra("text") != null) text = intent.getStringExtra("text");
@@ -901,6 +939,7 @@ public class SyncForegroundService extends Service {
 
     @Override
     public void onDestroy() {
+        busy = false;
         try { if (ticker != null && tick != null) ticker.removeCallbacks(tick); } catch (Exception ignored) {}
         try { if (receiver != null) unregisterReceiver(receiver); } catch (Exception ignored) {}
         try { if (wakeLock != null && wakeLock.isHeld()) wakeLock.release(); } catch (Exception ignored) {}
@@ -940,6 +979,78 @@ public class BootReceiver extends BroadcastReceiver {
 );
 
 writeIfChanged(
+  resolve(javaDir, "WebKeepAlive.java"),
+  `package ${APP_ID};
+
+import android.os.Handler;
+import android.os.Looper;
+import android.view.View;
+import android.webkit.WebView;
+
+/**
+ * Keeps the WebView running while the app is off screen.
+ *
+ * resumeTimers()/onResume() undo the WebView-level pause, but they are not the
+ * whole story: Chromium derives the *page's* visibility from the window's
+ * visibility, and once the activity stops, the page counts as hidden. A hidden
+ * page has its timers throttled to roughly one tick a minute and its renderer
+ * demoted to a first-choice victim for the low-memory killer — which is what
+ * made uploads crawl and then die a few minutes after the screen went off,
+ * battery exemption or not.
+ *
+ * dispatchWindowVisibilityChanged(VISIBLE) tells Chromium the page is still
+ * visible. Only done while a backup is armed, and undone as soon as it is not.
+ */
+public final class WebKeepAlive {
+    private static final Handler UI = new Handler(Looper.getMainLooper());
+
+    private WebKeepAlive() {}
+
+    /** Assert "still visible" once, on the UI thread. */
+    public static void assertVisible(final WebView webView) {
+        if (webView == null) return;
+        UI.post(new Runnable() {
+            @Override public void run() {
+                try {
+                    webView.resumeTimers();
+                    webView.onResume();
+                    webView.dispatchWindowVisibilityChanged(View.VISIBLE);
+                } catch (Exception ignored) {}
+            }
+        });
+    }
+
+    /**
+     * The framework dispatches the real visibility change through the view
+     * hierarchy *after* onPause/onStop return, so a single call at that moment
+     * is overwritten milliseconds later. Repeat on the message queue.
+     */
+    public static void assertVisibleSoon(final WebView webView) {
+        assertVisible(webView);
+        UI.postDelayed(new Runnable() {
+            @Override public void run() { assertVisible(webView); }
+        }, 300);
+        UI.postDelayed(new Runnable() {
+            @Override public void run() { assertVisible(webView); }
+        }, 1500);
+    }
+
+    /** Hand the page's visibility back to the window it actually lives in. */
+    public static void release(final WebView webView) {
+        if (webView == null) return;
+        UI.post(new Runnable() {
+            @Override public void run() {
+                try {
+                    webView.dispatchWindowVisibilityChanged(webView.getWindowVisibility());
+                } catch (Exception ignored) {}
+            }
+        });
+    }
+}
+`,
+);
+
+writeIfChanged(
   resolve(javaDir, "MainActivity.java"),
   `package ${APP_ID};
 
@@ -955,7 +1066,8 @@ public class MainActivity extends BridgeActivity {
 
     // Android suspends the WebView's JS timers once the activity leaves the
     // screen, which would stall uploads mid-queue. The foreground service keeps
-    // the process alive, so resume the timers right after the pause/stop.
+    // the process alive, so keep the page awake too — but only while a backup
+    // is armed, so an idle app still goes properly to sleep.
     @Override
     public void onPause() {
         super.onPause();
@@ -970,9 +1082,9 @@ public class MainActivity extends BridgeActivity {
 
     private void keepWebViewRunning() {
         try {
-            if (bridge != null && bridge.getWebView() != null) {
-                bridge.getWebView().resumeTimers();
-                bridge.getWebView().onResume();
+            if (bridge == null || bridge.getWebView() == null) return;
+            if (SyncForegroundService.isArmed(this) || SyncForegroundService.isBusy()) {
+                WebKeepAlive.assertVisibleSoon(bridge.getWebView());
             }
         } catch (Exception ignored) {}
     }

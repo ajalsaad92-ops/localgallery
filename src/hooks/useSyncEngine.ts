@@ -67,7 +67,16 @@ export function useSyncLoop() {
   useEffect(() => {
     const on = () => void runSyncCycle();
     window.addEventListener("online", on);
-    return () => window.removeEventListener("online", on);
+    // Coming back to the app is the one moment a stalled queue must not be
+    // left waiting for the next heartbeat.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void runSyncCycle();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("online", on);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   // Commands and the background heartbeat coming from the native service.

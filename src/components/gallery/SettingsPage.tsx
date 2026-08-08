@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { ArrowRight, BatteryCharging, Download, Loader2 } from "lucide-react";
-import { photoDb, MAX_UPLOAD_MB } from "@/lib/photoDb";
+import { photoDb, DEFAULT_MAX_FILE_MB, MAX_UPLOAD_MB } from "@/lib/photoDb";
 import { useSyncSettings } from "@/hooks/useSyncEngine";
-import { setSyncSettings } from "@/lib/syncEngine";
+import { MAX_PARALLEL_UPLOADS, setSyncSettings } from "@/lib/syncEngine";
 import { cn } from "@/lib/utils";
 import { checkForUpdate, launchApkInstall, APP_VERSION, type UpdateInfo } from "@/lib/ota";
 import { isIgnoringBatteryOptimizations, requestBatteryExemption, isNative, tap } from "@/lib/native";
@@ -96,32 +96,33 @@ export function SettingsPage({ onBack }: Props) {
                 ملفات تُرفع معاً: {settings.parallelUploads}
               </label>
               <input
-                type="range" min={1} max={10} step={1}
-                value={settings.parallelUploads}
+                type="range" min={1} max={MAX_PARALLEL_UPLOADS} step={1}
+                value={Math.min(settings.parallelUploads, MAX_PARALLEL_UPLOADS)}
                 onChange={(e) => setSyncSettings({ parallelUploads: Number(e.target.value) })}
                 className="w-full accent-primary"
               />
               <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
-                أعلى = أسرع على شبكة جيدة. الفيديوهات الكبيرة تُرفع بعدد أقل
-                تلقائياً لأن كل ملف يُحمَّل في الذاكرة أثناء إرساله.
+                الملفات تُرسل على أجزاء، فالرقم العالي لا يستهلك ذاكرة إضافية.
+                لكن كل الملفات تشترك في اتصال واحد مع تيليجرام: إن بدأ يطلب
+                التمهّل، يقلّل التطبيق العدد تلقائياً ثم يرفعه ثانية.
               </p>
             </div>
 
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                أقصى حجم للملف: {Math.min(settings.maxFileMb || MAX_UPLOAD_MB, MAX_UPLOAD_MB)} م.ب
+                أقصى حجم للملف: {Math.min(settings.maxFileMb || DEFAULT_MAX_FILE_MB, MAX_UPLOAD_MB)} م.ب
               </label>
               <input
                 type="range"
                 min={25}
                 max={MAX_UPLOAD_MB}
                 step={25}
-                value={Math.min(settings.maxFileMb || MAX_UPLOAD_MB, MAX_UPLOAD_MB)}
+                value={Math.min(settings.maxFileMb || DEFAULT_MAX_FILE_MB, MAX_UPLOAD_MB)}
                 onChange={(e) => setSyncSettings({ maxFileMb: Number(e.target.value) })}
                 className="w-full accent-primary"
               />
               <p className="text-[11px] text-muted-foreground">
-                الملفات الأكبر تُتخطّى — رفعها يستهلك ذاكرة أكبر مما يسمح به الهاتف.
+                الملفات الأكبر تُتخطّى. الحد الأعلى هنا هو حدّ تيليجرام نفسه.
               </p>
             </div>
           </div>

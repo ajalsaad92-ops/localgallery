@@ -49,6 +49,24 @@ export interface KV {
   value: string;
 }
 
+/**
+ * One row per upload that started but has not been confirmed locally yet.
+ *
+ * There is exactly one window in which this app can send the same photo twice:
+ * Telegram accepts the file, and the phone dies (or Android kills the process)
+ * before the asset row is marked as synced. The journal survives that, and the
+ * next sync pass settles it against the channel's own captions instead of
+ * blindly uploading again.
+ */
+export interface UploadJournalRow {
+  /** contentKey of the asset — the same value stamped into the caption. */
+  key: string;
+  assetId: string;
+  chatId: string;
+  name: string;
+  startedAt: number;
+}
+
 export type SyncMode = "manual" | "auto";
 
 export interface SyncSettings {
@@ -63,16 +81,24 @@ export interface SyncSettings {
 }
 
 /**
- * Telegram accepts up to 2 GB per file, but the upload path has to hold the
- * bytes in memory and an Android WebView is killed long before that. 400 MB is
- * the largest size that still survives reliably on a mid-range phone.
+ * Upload ceiling.
+ *
+ * This used to be 400 MB because gramjs held every byte of a file in memory
+ * before sending it. The uploader streams the blob part by part now, so the
+ * binding constraint is Telegram's own limit of 4000 parts × 512 KB.
  */
-export const MAX_UPLOAD_MB = 400;
+export const MAX_UPLOAD_MB = 1900;
+
+/**
+ * Default cut-off, well below the ceiling on purpose: a multi-gigabyte video
+ * would hold a slot for hours on a phone connection. Raise it in Settings.
+ */
+export const DEFAULT_MAX_FILE_MB = 400;
 
 export const DEFAULT_SYNC_SETTINGS: SyncSettings = {
   mode: "auto",
   wifiOnly: true,
-  maxFileMb: MAX_UPLOAD_MB,
+  maxFileMb: DEFAULT_MAX_FILE_MB,
   paused: false,
   freeBlobAfterSync: true,
   parallelUploads: 4,
@@ -82,6 +108,7 @@ class PhotoDatabase extends Dexie {
   assets!: Table<MediaAsset, string>;
   kv!: Table<KV, string>;
   thumbs!: Table<ThumbRow, string>;
+  uploads!: Table<UploadJournalRow, string>;
 
   constructor() {
     super("localgallery-pro");
@@ -191,6 +218,18 @@ class PhotoDatabase extends Dexie {
           a.provider = "device";
         }
       });
+    });
+
+    // v17: the in-flight upload journal. A new table (like a new index) needs
+    // its own version() — Dexie never re-applies a version the user already
+    // reached, so adding `uploads` to v15 would leave existing installs
+    // without the table and every journal write would throw.
+    this.version(17).stores({
+      assets:
+        "id, provider, date, syncedAt, contentKey, remoteMessageId, remoteChatId, bucket",
+      kv: "key",
+      thumbs: "id",
+      uploads: "key, chatId, startedAt",
     });
   }
 }

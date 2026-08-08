@@ -5,6 +5,7 @@
  */
 import { photoDb, MAX_UPLOAD_MB } from "@/lib/photoDb";
 import { parseCaptionKey, resolveOriginalDate } from "@/lib/captionMeta";
+import { LARGE_FILE_THRESHOLD, MAX_UPLOADABLE_BYTES, forEachPart } from "@/lib/uploadParts";
 
 
 
@@ -285,25 +286,140 @@ async function resolveEntity(client: any, target: MtTarget): Promise<any> {
   }
 }
 
+// --- flood-wait pressure ------------------------------------------------------
+// Telegram answers "too many requests" with FLOOD_WAIT_<seconds>. The uploader
+// waits it out silently, but the sync engine needs to know it happened so it
+// can send fewer files at once on the next pass — otherwise raising the
+// parallel limit makes the backup *slower* and looks like a hang.
+let floodHits = 0;
+
+/** Flood-waits seen since the last call, then resets the counter. */
+export function takeFloodPressure(): number {
+  const n = floodHits;
+  floodHits = 0;
+  return n;
+}
+
+function floodSeconds(e: unknown): number | null {
+  const seconds = (e as { seconds?: number })?.seconds;
+  if (typeof seconds === "number" && seconds > 0) return seconds;
+  const msg = e instanceof Error ? e.message : String(e ?? "");
+  const m = msg.match(/FLOOD_WAIT_(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Send one file part, retrying the way gramjs does internally.
+ *
+ * A dropped socket is not an error here: the client reconnects on its own, so
+ * the part is simply sent again. Only a genuine RPC failure propagates.
+ */
+async function sendPart(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  c: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  request: any,
+): Promise<void> {
+  let netRetries = 0;
+  for (;;) {
+    try {
+      const sender = await c.getSender(c.session.dcId);
+      await sender.send(request);
+      return;
+    } catch (e) {
+      const wait = floodSeconds(e);
+      if (wait != null) {
+        floodHits++;
+        // Anything beyond a few minutes means the account is being throttled
+        // hard; fail the file so the queue moves on and retries later.
+        if (wait > 300) throw e;
+        await sleep(wait * 1000 + 500);
+        continue; // waiting out a flood is not one of the network retries
+      }
+      const msg = e instanceof Error ? e.message : String(e);
+      if (netRetries < 5 && /disconnect|not connected|timeout|network|socket|closed/i.test(msg)) {
+        netRetries++;
+        await sleep(1000 * netRetries);
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+/**
+ * Push a blob to Telegram in parts and return the handle `sendFile` accepts.
+ *
+ * The bytes are read one slice at a time straight out of the Blob, so a 300 MB
+ * video costs a few hundred kilobytes of heap instead of 300 MB. That is what
+ * makes a three-digit parallel limit survivable — before this, every worker
+ * held its entire file in memory and four large videos at once were enough to
+ * have Android kill the WebView mid-backup.
+ */
+async function uploadInParts(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  c: any,
+  blob: Blob,
+  name: string,
+  onProgress?: (fraction: number) => void,
+  isCancelled?: () => boolean,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any> {
+  const { Api } = await import("telegram");
+  const { generateRandomBytes, readBigIntFromBuffer } = await import("telegram/Helpers");
+  const { Buffer } = await import("buffer");
+
+  const isLarge = blob.size > LARGE_FILE_THRESHOLD;
+  const fileId = readBigIntFromBuffer(generateRandomBytes(8), true, true);
+
+  let sent = 0;
+  onProgress?.(0);
+
+  const partCount = await forEachPart(
+    blob,
+    async (part, total, chunk) => {
+      const bytes = Buffer.from(chunk);
+      await sendPart(
+        c,
+        isLarge
+          ? new Api.upload.SaveBigFilePart({
+              fileId, filePart: part, fileTotalParts: total, bytes,
+            })
+          : new Api.upload.SaveFilePart({ fileId, filePart: part, bytes }),
+      );
+      sent++;
+      onProgress?.(sent / total);
+    },
+    { isCancelled },
+  );
+
+  return isLarge
+    ? new Api.InputFileBig({ id: fileId, parts: partCount, name })
+    : new Api.InputFile({ id: fileId, parts: partCount, name, md5Checksum: "" });
+}
+
 /**
  * Upload a file straight from the user account.
  *
- * gramjs buffers the whole file in memory before sending, so the practical
- * ceiling is the WebView's heap, not Telegram's 2 GB limit. Anything above
- * MAX_UPLOAD_MB is rejected up front with a readable message instead of being
- * allowed to kill the process mid-upload.
+ * The bytes are streamed part by part (see `uploadInParts`), so the ceiling is
+ * Telegram's own 4000-part limit rather than the WebView's heap. Anything
+ * larger is rejected up front with a readable message.
  */
 export async function uploadToTarget(
   file: File,
   onProgress?: (fraction: number) => void,
   caption?: string,
+  opts?: { isCancelled?: () => boolean },
 ): Promise<{ messageId: number; chatId: string }> {
-  const limit = MAX_UPLOAD_MB * 1024 * 1024;
+  const limit = Math.min(MAX_UPLOAD_MB * 1024 * 1024, MAX_UPLOADABLE_BYTES);
   if (file.size > limit) {
     throw new Error(
-      `الملف ${Math.round(file.size / 1048576)} م.ب — الحد الأقصى ${MAX_UPLOAD_MB} م.ب`,
+      `الملف ${Math.round(file.size / 1048576)} م.ب — الحد الأقصى ${Math.floor(limit / 1048576)} م.ب`,
     );
   }
+  if (file.size === 0) throw new Error(`ملف فارغ: ${file.name}`);
 
   const client = await getClient();
   if (!client) throw new Error("لم يتم ربط الحساب الشخصي بعد");
@@ -312,24 +428,82 @@ export async function uploadToTarget(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const c = client as any;
   const entity = await resolveEntity(c, target);
-  const big = file.size > 10 * 1024 * 1024;
 
-  // gramjs in the browser rejects plain File objects ("Cannot use [object
-  // File] as file") — wrap the bytes in a CustomFile instead.
-  const { CustomFile } = await import("telegram/client/uploads");
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  const custom = new CustomFile(file.name, bytes.length, file.name, bytes as unknown as Buffer);
-  const msg = await c.sendFile(entity, {
-    file: custom,
-    forceDocument: true,
-    // Caption carries the original capture timestamp so the gallery can show
-    // the real date instead of the Telegram upload date.
-    caption,
-    // More workers keep large videos from stalling on a single connection.
-    workers: big ? 4 : 1,
-    progressCallback: onProgress ? (p: number) => onProgress(p) : undefined,
-  });
+  const handle = await uploadInParts(c, file, file.name, onProgress, opts?.isCancelled);
+
+  // sendFile short-circuits when it is handed an already-uploaded file handle:
+  // no second read of the bytes, and the filename attribute is taken from the
+  // handle's own `name`.
+  const msg = await withFloodRetry<{ id: unknown }>(() =>
+    c.sendFile(entity, {
+      file: handle,
+      forceDocument: true,
+      // Caption carries the original capture timestamp so the gallery can show
+      // the real date instead of the Telegram upload date.
+      caption,
+    }),
+  );
   return { messageId: Number(msg.id), chatId: target.id };
+}
+
+/** Wait out a flood-wait on the message send itself, not just on the parts. */
+async function withFloodRetry<T>(fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      const wait = floodSeconds(e);
+      if (wait == null || wait > 300 || attempt >= 3) throw e;
+      floodHits++;
+      await sleep(wait * 1000 + 500);
+    }
+  }
+}
+
+/**
+ * Caption keys of the newest messages in the target channel.
+ *
+ * Used to settle uploads that were interrupted between "Telegram accepted the
+ * file" and "the local row was marked synced" — the one window where the app
+ * can genuinely send the same photo twice.
+ */
+export async function fetchRecentCaptionKeys(
+  sinceMs: number,
+  maxMessages = 600,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const client = await getClient();
+  if (!client) return out;
+  const target = await getSavedTarget();
+  if (!target) return out;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const c = client as any;
+  const entity = await resolveEntity(c, target);
+
+  let offsetId = 0;
+  let scanned = 0;
+  while (scanned < maxMessages) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const page: any[] = await c.getMessages(entity, {
+      limit: Math.min(100, maxMessages - scanned),
+      offsetId,
+    });
+    if (!page || page.length === 0) break;
+    for (const m of page) {
+      const key = parseCaptionKey(m.message ?? m.caption ?? "");
+      if (key && !out.has(key)) out.set(key, Number(m.id));
+    }
+    scanned += page.length;
+    const last = page[page.length - 1];
+    const lastDateMs = Number(last.date ?? 0) * 1000;
+    // Journal entries are minutes old at most — stop as soon as the page is
+    // older than the oldest interrupted upload.
+    if (lastDateMs && lastDateMs < sinceMs) break;
+    const lastId = Number(last.id);
+    if (!Number.isFinite(lastId) || lastId <= 1 || lastId === offsetId) break;
+    offsetId = lastId;
+  }
+  return out;
 }
 
 
