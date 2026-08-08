@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2 } from "lucide-react";
 import { useMediaAssets } from "@/hooks/useMediaAssets";
-import { useGalleryView, useSelection, onThisDay } from "@/hooks/useGalleryView";
+import { useGalleryView, useSelection, onThisDay, toGalleryItem } from "@/hooks/useGalleryView";
 import { useUpdateWatcher } from "@/hooks/useUpdateWatcher";
 import { launchApkInstall } from "@/lib/ota";
 import { Memories } from "./Memories";
@@ -28,8 +28,12 @@ export function SyncScreen({ onSelectionChange }: { onSelectionChange?: (on: boo
   const sel = useSelection();
   const { density } = useGridDensity();
   const [lightbox, setLightbox] = useState<number | null>(null);
+  const [memoryBox, setMemoryBox] = useState<number | null>(null);
   const [target, setTarget] = useState<MtTarget | null>(null);
   const { update, dismiss } = useUpdateWatcher();
+
+  const memories = useMemo(() => onThisDay(assets), [assets]);
+  const memoryItems = useMemo(() => memories.map((a) => toGalleryItem(a)), [memories]);
 
   useEffect(() => {
     let alive = true;
@@ -73,8 +77,14 @@ export function SyncScreen({ onSelectionChange }: { onSelectionChange?: (on: boo
       <header className="safe-top flex items-center gap-3 px-4 pb-1 pt-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-1.5">
+            {/*
+              The whole library, screenshots included — the same basis as the
+              "waiting" figure beside it and the panel below. Showing the
+              filtered timeline count here made the two disagree, so the header
+              could read "8,461" while the panel reported 9,439 uploaded.
+            */}
             <span className="text-[19px] font-black leading-none tabular-nums">
-              {view.items.length.toLocaleString("ar")}
+              {assets.length.toLocaleString("ar")}
             </span>
             <span className="truncate text-[11px] font-semibold text-muted-foreground">
               {pendingIds.size > 0
@@ -115,12 +125,16 @@ export function SyncScreen({ onSelectionChange }: { onSelectionChange?: (on: boo
         onBucket={view.setBucket}
       />
 
-      {view.filter === "all" && !view.query && !view.bucket && (
+      {view.filter === "all" && !view.query && !view.bucket && memories.length > 0 && (
         <Memories
-          assets={onThisDay(assets)}
+          assets={memories}
           onOpen={(id) => {
-            const i = view.items.findIndex((p) => p.id === id);
-            if (i >= 0) runViewTransition(() => setLightbox(i));
+            // The memories strip is drawn from the whole library, but the
+            // timeline hides screenshots — so looking the item up in the grid
+            // returned -1 for exactly those, and tapping them did nothing.
+            // Memories now open against their own list.
+            const i = memories.findIndex((a) => a.id === id);
+            if (i >= 0) runViewTransition(() => setMemoryBox(i));
           }}
         />
       )}
@@ -155,6 +169,16 @@ export function SyncScreen({ onSelectionChange }: { onSelectionChange?: (on: boo
           index={lightbox}
           onIndexChange={setLightbox}
           onClose={() => setLightbox(null)}
+          onDelete={(p) => void removeOne(p.id)}
+        />
+      )}
+
+      {memoryBox != null && (
+        <Lightbox
+          photos={memoryItems}
+          index={memoryBox}
+          onIndexChange={setMemoryBox}
+          onClose={() => setMemoryBox(null)}
           onDelete={(p) => void removeOne(p.id)}
         />
       )}

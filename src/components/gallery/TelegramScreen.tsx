@@ -15,6 +15,9 @@ import { useGridDensity } from "@/hooks/useGridDensity";
 import { runViewTransition } from "@/lib/viewTransition";
 import { tap } from "@/lib/native";
 
+/** Full-size downloads kept open at once — each one is a whole file. */
+const OPEN_FILE_CACHE = 6;
+
 /** The channel feed — what already lives on Telegram. */
 export function TelegramScreen() {
   const assets = useMediaAssets({ kind: "telegram-remote" });
@@ -49,8 +52,18 @@ export function TelegramScreen() {
       setReady(!!t && !!c);
     };
     void check();
-    const id = window.setInterval(() => void check(), 4000);
-    return () => { alive = false; window.clearInterval(id); };
+    // Every four seconds this called getClient(), which reconnects when the
+    // socket is down — competing with the uploader for the same client while a
+    // backup runs. The channel only changes when the user changes it, so a
+    // slower poll plus a check on return to the app is plenty.
+    const id = window.setInterval(() => void check(), 30_000);
+    const onVisible = () => { if (document.visibilityState === "visible") void check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   const runImport = useCallback(async (announce: boolean) => {
@@ -86,7 +99,22 @@ export function TelegramScreen() {
           if (!id || !total) return;
           toast.loading(`جارٍ التحميل… ${Math.round((received / total) * 100)}%`, { id });
         });
-        if (url) setFullUrls((m) => new Map(m).set(asset.id, url));
+        if (url) {
+          setFullUrls((m) => {
+            const next = new Map(m).set(asset.id, url);
+            // Each entry pins a whole downloaded file in the WebView's blob
+            // store. Browsing a channel used to pin every photo opened, for as
+            // long as the app lived; keep a handful and release the rest.
+            while (next.size > OPEN_FILE_CACHE) {
+              const oldest = next.keys().next().value;
+              if (oldest === undefined) break;
+              const stale = next.get(oldest);
+              if (stale) URL.revokeObjectURL(stale);
+              next.delete(oldest);
+            }
+            return next;
+          });
+        }
         if (id) toast.dismiss(id);
       } catch {
         if (id) toast.error("تعذّر تحميل الملف", { id });

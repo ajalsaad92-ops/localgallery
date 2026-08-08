@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { ArrowRight, BatteryCharging, Download, Loader2 } from "lucide-react";
+import { ArrowRight, BatteryCharging, Download, Loader2, Trash2 } from "lucide-react";
 import { photoDb, DEFAULT_MAX_FILE_MB, MAX_UPLOAD_MB } from "@/lib/photoDb";
 import { useSyncSettings } from "@/hooks/useSyncEngine";
 import { MAX_PARALLEL_UPLOADS, setSyncSettings } from "@/lib/syncEngine";
 import { cn } from "@/lib/utils";
 import { checkForUpdate, launchApkInstall, APP_VERSION, type UpdateInfo } from "@/lib/ota";
-import { isIgnoringBatteryOptimizations, requestBatteryExemption, isNative, tap } from "@/lib/native";
+import {
+  isIgnoringBatteryOptimizations, requestBatteryExemption, isNative, tap,
+  storageUsage, clearAppCache, type StorageReport,
+} from "@/lib/native";
 import { TelegramAccountCard } from "./TelegramAccountCard";
 
 interface Props {
@@ -149,6 +152,8 @@ export function SettingsPage({ onBack }: Props) {
           </section>
         )}
 
+        <StorageSection />
+
         <section className="rounded-2xl border border-border bg-card p-4">
           <h2 className="mb-1 text-sm font-bold">التحديث</h2>
           <p className="mb-3 text-xs text-muted-foreground">
@@ -190,6 +195,97 @@ export function SettingsPage({ onBack }: Props) {
         </section>
       </div>
     </div>
+  );
+}
+
+const LABELS: Record<string, string> = {
+  databases: "قاعدة بيانات التطبيق",
+  webview_profile: "تخزين الويب‑فيو (الفهرس والمعاينات)",
+  webview_blobs: "ملفات مؤقتة للرفع",
+  cache: "ذاكرة مؤقتة",
+  external_cache: "ذاكرة مؤقتة خارجية",
+  files: "ملفات",
+  code_cache: "كود مؤقت",
+  app_webview: "ويب‑فيو (الإجمالي)",
+  shared_prefs: "إعدادات",
+};
+
+const bytes = (n: number) => {
+  if (n >= 1073741824) return `${(n / 1073741824).toFixed(2)} غ.ب`;
+  if (n >= 1048576) return `${Math.round(n / 1048576)} م.ب`;
+  return `${Math.round(n / 1024)} ك.ب`;
+};
+
+/**
+ * Where the app's disk usage goes.
+ *
+ * Exists because "the app is holding 8 GB" is not something anyone should have
+ * to guess at — including me.
+ */
+function StorageSection() {
+  const [report, setReport] = useState<StorageReport | null>(null);
+  const [working, setWorking] = useState(false);
+
+  const refresh = () => { void storageUsage().then(setReport); };
+  useEffect(() => { if (isNative()) refresh(); }, []);
+
+  if (!isNative()) return null;
+
+  // Biggest first, and skip the rounding noise. `app_webview` is dropped
+  // because its two interesting halves are listed separately.
+  const rows = Object.entries(report?.dirs ?? {})
+    .filter(([k, v]) => v > 1024 * 512 && k !== "app_webview")
+    .sort((a, b) => b[1] - a[1]);
+
+  const clean = async () => {
+    setWorking(true);
+    try {
+      const freed = await clearAppCache();
+      const dropped = await photoDb.thumbs.count();
+      await photoDb.thumbs.clear();
+      toast.success(
+        `فُرّغ ${bytes(freed)}${dropped ? ` · حُذفت ${dropped} معاينة مخزّنة` : ""}`,
+      );
+      refresh();
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return (
+    <section className="rounded-2xl border border-border bg-card p-4">
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="text-sm font-bold">مساحة التطبيق</h2>
+        <span className="text-sm font-black tabular-nums">
+          {report ? bytes(report.total) : "…"}
+        </span>
+      </div>
+
+      <div className="mb-3 space-y-1">
+        {rows.map(([key, value]) => (
+          <div key={key} className="flex items-center justify-between text-[11px]">
+            <span className="text-muted-foreground">{LABELS[key] ?? key}</span>
+            <span className="tabular-nums">{bytes(value)}</span>
+          </div>
+        ))}
+        {rows.length === 0 && (
+          <p className="text-[11px] text-muted-foreground">لا شيء يُذكر.</p>
+        )}
+      </div>
+
+      <p className="mb-2 text-[10px] leading-relaxed text-muted-foreground">
+        التنظيف يحذف الملفات المؤقتة والمعاينات المخزّنة فقط. لا يمسّ صورك ولا
+        فهرس التطبيق — المعاينات تُنزَّل ثانية عند تصفّح القناة.
+      </p>
+      <button
+        onClick={clean}
+        disabled={working}
+        className="press flex items-center gap-1.5 rounded-full bg-secondary px-4 py-2 text-sm font-semibold disabled:opacity-50"
+      >
+        {working ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+        تنظيف
+      </button>
+    </section>
   );
 }
 

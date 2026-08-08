@@ -97,6 +97,13 @@ function emit(patch: Partial<SyncProgress>) {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** "٣٠ دقيقة" / "٤٥ ثانية" — a wait a person can read. */
+function floodWaitText(seconds: number): string {
+  if (seconds < 90) return `${seconds} ثانية`;
+  const mins = Math.round(seconds / 60);
+  return `${mins} دقيقة`;
+}
+
 /** Errors worth retrying: the socket, the radio, or Telegram being busy. */
 function isTransient(msg: string): boolean {
   return /disconnect|not connected|timeout|timedout|network|socket|closed|econn|fetch|offline|flood/i.test(
@@ -480,6 +487,15 @@ export async function runSyncCycle(): Promise<{ processed: number; failed: numbe
     return { processed: 0, failed: 0 };
   }
 
+  // Telegram is still counting down a flood-wait. Starting a pass now would
+  // only queue files behind a gate that cannot open yet.
+  const { floodCooldownMs } = await import("@/lib/providers/mtproto");
+  const cooling = floodCooldownMs();
+  if (cooling > 0) {
+    emit({ lastError: `تيليجرام يطلب الانتظار ${floodWaitText(Math.ceil(cooling / 1000))}` });
+    return { processed: 0, failed: 0 };
+  }
+
   const settings = await getSyncSettings();
   if (settings.paused) {
     // Drop the "uploading" notification so a paused app is not left with a
@@ -523,7 +539,8 @@ export async function runSyncCycle(): Promise<{ processed: number; failed: numbe
   let connected = false;
 
   try {
-    const { getClient, takeFloodPressure } = await import("@/lib/providers/mtproto");
+    const { getClient, takeFloodPressure, isFloodPause } =
+      await import("@/lib/providers/mtproto");
     const client = await getClient().catch(() => null);
     if (!client) return { processed: 0, failed: 0 };
     connected = true;
@@ -632,6 +649,15 @@ export async function runSyncCycle(): Promise<{ processed: number; failed: numbe
               return;
             } catch (e) {
               if (stopped()) return;
+              const paused = isFloodPause(e);
+              if (paused != null) {
+                // Telegram asked for a long wait. That is not this file's
+                // fault: leave its retry budget alone, stand the whole pass
+                // down and let the heartbeat come back when the wait is over.
+                abort = true;
+                emitRun({ lastError: `تيليجرام يطلب الانتظار ${floodWaitText(paused)}` });
+                return;
+              }
               const msg = e instanceof Error ? e.message : String(e);
               if (!isTransient(msg) || attempt >= MAX_ATTEMPTS) {
                 failed++;

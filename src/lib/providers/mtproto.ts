@@ -331,6 +331,76 @@ function floodSeconds(e: unknown): number | null {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// --- send pacing --------------------------------------------------------------
+/*
+ * Uploading file *parts* in parallel is fine — Telegram sizes those limits for
+ * throughput. Posting *messages* is not: a personal account may put roughly
+ * twenty to thirty messages a minute into a channel, and a hundred concurrent
+ * `messages.SendMedia` calls earned a 1809-second ban in the field. So parts
+ * stay wide and messages go through this gate: one at a time, with a minimum
+ * gap that stretches whenever Telegram pushes back and relaxes when it does
+ * not.
+ */
+const SEND_SPACING_MIN_MS = 900;
+const SEND_SPACING_START_MS = 1200;
+const SEND_SPACING_MAX_MS = 20000;
+/** Longer than this and the whole pass steps aside instead of holding files. */
+const MAX_INLINE_WAIT_S = 120;
+
+let sendSpacingMs = SEND_SPACING_START_MS;
+let lastSendAt = 0;
+let cooldownUntil = 0;
+let sendChain: Promise<unknown> = Promise.resolve();
+
+/** Milliseconds until Telegram is willing to accept messages again. */
+export function floodCooldownMs(): number {
+  return Math.max(0, cooldownUntil - Date.now());
+}
+
+export function isFloodPause(e: unknown): number | null {
+  const msg = e instanceof Error ? e.message : String(e ?? "");
+  const m = msg.match(/^FLOOD_PAUSE:(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
+function noteFlood(seconds: number) {
+  floodHits++;
+  cooldownUntil = Math.max(cooldownUntil, Date.now() + seconds * 1000);
+  sendSpacingMs = Math.min(SEND_SPACING_MAX_MS, Math.round(sendSpacingMs * 1.8));
+}
+
+/**
+ * Serialize one message send behind the pacing gate.
+ *
+ * Every caller queues on the same chain, so "how many files upload at once" no
+ * longer decides how fast messages are posted.
+ */
+async function pacedSend<T>(fn: () => Promise<T>): Promise<T> {
+  const run = async (): Promise<T> => {
+    for (;;) {
+      const wait = Math.max(floodCooldownMs(), lastSendAt + sendSpacingMs - Date.now());
+      if (wait > 0) await sleep(wait);
+      if (floodCooldownMs() > 0) continue;
+      lastSendAt = Date.now();
+      try {
+        const out = await fn();
+        // A quiet stretch earns a little speed back.
+        sendSpacingMs = Math.max(SEND_SPACING_MIN_MS, Math.round(sendSpacingMs * 0.97));
+        return out;
+      } catch (e) {
+        const seconds = floodSeconds(e);
+        if (seconds == null) throw e;
+        noteFlood(seconds);
+        if (seconds > MAX_INLINE_WAIT_S) throw new Error(`FLOOD_PAUSE:${seconds}`);
+      }
+    }
+  };
+  const queued = sendChain.then(run, run);
+  // Failures must not break the chain for everyone behind them.
+  sendChain = queued.then(() => undefined, () => undefined);
+  return queued;
+}
+
 /**
  * Send one file part, retrying the way gramjs does internally.
  *
@@ -457,7 +527,7 @@ export async function uploadToTarget(
     // sendFile short-circuits when it is handed an already-uploaded file
     // handle: no second read of the bytes, and the filename attribute is taken
     // from the handle's own `name`.
-    msg = await withFloodRetry<{ id: unknown }>(() =>
+    msg = await pacedSend<{ id: unknown }>(() =>
       c.sendFile(entity, {
         file: handle,
         forceDocument: true,
@@ -506,7 +576,7 @@ async function sendViaGramjs(
   const { CustomFile } = await import("telegram/client/uploads");
   const bytes = new Uint8Array(await file.arrayBuffer());
   const custom = new CustomFile(file.name, bytes.length, file.name, bytes as unknown as Buffer);
-  return withFloodRetry<{ id: unknown }>(() =>
+  return pacedSend<{ id: unknown }>(() =>
     c.sendFile(entity, {
       file: custom,
       forceDocument: true,
@@ -517,19 +587,6 @@ async function sendViaGramjs(
   );
 }
 
-/** Wait out a flood-wait on the message send itself, not just on the parts. */
-async function withFloodRetry<T>(fn: () => Promise<T>): Promise<T> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await fn();
-    } catch (e) {
-      const wait = floodSeconds(e);
-      if (wait == null || wait > 300 || attempt >= 3) throw e;
-      floodHits++;
-      await sleep(wait * 1000 + 500);
-    }
-  }
-}
 
 /**
  * Caption keys of the newest messages in the target channel.
@@ -743,8 +800,11 @@ export async function fetchMessageThumb(messageId: number): Promise<string | nul
     m = fetched;
     msgCache.set(messageId, m);
   }
-  // thumb index 0 = smallest cached JPEG (documents AND photos support it).
-  for (const thumb of [0, 1, -1]) {
+  // Index 0 is the *stripped* thumbnail — a couple of dozen pixels meant as a
+  // blur placeholder. Reading it first is why the channel grid looked like
+  // smeared paint. Walk down from the largest cached size instead and take the
+  // first one that decodes; -1 is gramjs's "biggest available".
+  for (const thumb of [-1, 2, 1, 0]) {
     try {
       const buf = await c.downloadMedia(m, { thumb });
       if (buf && buf.length) return toDataUrl(new Uint8Array(buf));

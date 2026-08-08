@@ -191,6 +191,9 @@ import java.net.URL;
     }
 )
 public class LocalGalleryMediaPlugin extends Plugin {
+    /** Upper bound for one system delete confirmation. */
+    private static final int MAX_DELETE_BATCH = 400;
+
     private BroadcastReceiver commandReceiver;
 
     @Override
@@ -518,6 +521,15 @@ public class LocalGalleryMediaPlugin extends Plugin {
                 // no IntentSender helper. The result is not awaited here; the JS
                 // side reconciles against MediaStore afterwards, so a cancelled
                 // dialog simply leaves the items in place.
+                //
+                // One request per press, and never more than MAX_DELETE_BATCH
+                // items: the whole list travels to the system through a Binder
+                // transaction, and asking to delete five thousand photos at once
+                // threw TransactionTooLarge — which this method used to swallow,
+                // so the button looked dead.
+                if (uris.size() > MAX_DELETE_BATCH) {
+                    uris = new java.util.ArrayList<>(uris.subList(0, MAX_DELETE_BATCH));
+                }
                 android.app.PendingIntent pi = MediaStore.createDeleteRequest(
                     getContext().getContentResolver(), uris);
                 getActivity().startIntentSenderForResult(
@@ -584,6 +596,98 @@ public class LocalGalleryMediaPlugin extends Plugin {
         } catch (Exception e) {
             call.reject("Install failed: " + e.getMessage(), e);
         }
+    }
+
+    // ---- storage ------------------------------------------------------------
+    private long sizeOf(java.io.File f) {
+        if (f == null || !f.exists()) return 0;
+        if (f.isFile()) return f.length();
+        java.io.File[] kids = f.listFiles();
+        if (kids == null) return 0;
+        long total = 0;
+        for (java.io.File k : kids) total += sizeOf(k);
+        return total;
+    }
+
+    private java.io.File dataDir() {
+        if (Build.VERSION.SDK_INT >= 24) return getContext().getDataDir();
+        java.io.File files = getContext().getFilesDir();
+        return files != null ? files.getParentFile() : null;
+    }
+
+    /**
+     * Where the app's disk footprint actually is. Guesswork about which cache
+     * grew is how you end up "fixing" four things and moving nothing.
+     */
+    @PluginMethod
+    public void storageUsage(PluginCall call) {
+        JSObject ret = new JSObject();
+        java.io.File root = dataDir();
+        ret.put("total", sizeOf(root));
+        JSObject dirs = new JSObject();
+        if (root != null) {
+            String[] names = {
+                "databases", "app_webview", "cache", "files", "shared_prefs", "code_cache"
+            };
+            for (String n : names) dirs.put(n, sizeOf(new java.io.File(root, n)));
+            // The two that grow on their own: Chromium's blob spill area and
+            // its profile (IndexedDB, Cache Storage, Local Storage).
+            dirs.put("webview_blobs", sizeOf(new java.io.File(root, "app_webview/blob_storage")));
+            dirs.put("webview_profile", sizeOf(new java.io.File(root, "app_webview/Default")));
+        }
+        java.io.File ext = getContext().getExternalCacheDir();
+        dirs.put("external_cache", sizeOf(ext));
+        ret.put("dirs", dirs);
+        call.resolve(ret);
+    }
+
+    /**
+     * Clears what is safe to clear while the app runs: the HTTP cache and the
+     * cache directories. The WebView profile (IndexedDB) is the app's own data
+     * and is never touched here.
+     */
+    @PluginMethod
+    public void clearAppCache(final PluginCall call) {
+        final java.io.File root = dataDir();
+        final long before = sizeOf(getContext().getCacheDir())
+            + sizeOf(getContext().getExternalCacheDir())
+            + (root != null ? sizeOf(new java.io.File(root, "code_cache")) : 0);
+        getActivity().runOnUiThread(new Runnable() {
+            @Override public void run() {
+                try {
+                    if (getBridge() != null && getBridge().getWebView() != null) {
+                        getBridge().getWebView().clearCache(true);
+                    }
+                } catch (Exception ignored) {}
+                try {
+                    wipeInside(getContext().getCacheDir());
+                    wipeInside(getContext().getExternalCacheDir());
+                    if (root != null) wipeInside(new java.io.File(root, "code_cache"));
+                } catch (Exception ignored) {}
+                long after = sizeOf(getContext().getCacheDir())
+                    + sizeOf(getContext().getExternalCacheDir())
+                    + (root != null ? sizeOf(new java.io.File(root, "code_cache")) : 0);
+                JSObject ret = new JSObject();
+                ret.put("freed", Math.max(0, before - after));
+                call.resolve(ret);
+            }
+        });
+    }
+
+    private void wipeInside(java.io.File dir) {
+        if (dir == null || !dir.isDirectory()) return;
+        java.io.File[] kids = dir.listFiles();
+        if (kids == null) return;
+        for (java.io.File k : kids) deleteTree(k);
+    }
+
+    private void deleteTree(java.io.File f) {
+        if (f == null) return;
+        if (f.isDirectory()) {
+            java.io.File[] kids = f.listFiles();
+            if (kids != null) for (java.io.File k : kids) deleteTree(k);
+        }
+        try { f.delete(); } catch (Exception ignored) {}
     }
 
     // ---- battery ------------------------------------------------------------

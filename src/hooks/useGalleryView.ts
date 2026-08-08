@@ -23,7 +23,8 @@ function duplicateIds(assets: MediaAsset[]): Set<string> {
   return dupes;
 }
 
-const toItem = (a: MediaAsset, thumb?: string): GalleryItem => ({
+/** MediaAsset → what the grid and the viewer render. */
+export const toGalleryItem = (a: MediaAsset, thumb?: string): GalleryItem => ({
   id: a.id,
   width: a.width ?? 400,
   height: a.height ?? 400,
@@ -147,7 +148,7 @@ export function useGalleryView(
   }, [assets, filter, sort, dupes, query, bucket]);
 
   const items = useMemo(
-    () => filtered.map((a) => toItem(a, urlFor?.(a))),
+    () => filtered.map((a) => toGalleryItem(a, urlFor?.(a))),
     [filtered, urlFor],
   );
 

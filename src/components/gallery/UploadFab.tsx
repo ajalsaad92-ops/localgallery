@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Images, Loader2 } from "lucide-react";
+import { Loader2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import {
   canScanDeviceGallery,
@@ -54,7 +54,7 @@ export function UploadFab({ compact }: Props) {
     else fileInput.current?.click();
   };
 
-  const Icon = busy ? Loader2 : Images;
+  const Icon = busy ? Loader2 : RefreshCw;
 
   return (
     <>
@@ -67,17 +67,23 @@ export function UploadFab({ compact }: Props) {
         onChange={(e) => onWebFiles(e.currentTarget.files)}
       />
 
+      {/*
+        A bare photo-stack icon read as "open the studio" and nobody could tell
+        what it did. It rescans the phone for new photos, so it says so.
+      */}
       <button
         disabled={busy}
         onClick={trigger}
-        aria-label="تحديث المعرض"
+        aria-label="بحث عن صور جديدة في الهاتف"
+        title="بحث عن صور جديدة في الهاتف"
         className={
           compact
-            ? "press grid h-[46px] w-[46px] place-items-center rounded-full bg-secondary text-foreground disabled:opacity-60"
-            : "press fixed bottom-24 left-4 z-40 grid h-14 w-14 place-items-center rounded-full bg-primary text-primary-foreground shadow-fab disabled:opacity-60"
+            ? "press flex h-[38px] items-center gap-1.5 rounded-full bg-secondary px-3 text-[12px] font-bold text-foreground disabled:opacity-60"
+            : "press fixed bottom-24 left-4 z-40 flex h-12 items-center gap-2 rounded-full bg-primary px-4 text-sm font-bold text-primary-foreground shadow-fab disabled:opacity-60"
         }
       >
-        <Icon className={busy ? "h-5 w-5 animate-spin" : "h-5 w-5"} />
+        <Icon className={busy ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+        {busy ? "يبحث…" : "تحديث"}
       </button>
     </>
   );

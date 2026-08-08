@@ -49,6 +49,8 @@ interface LocalGalleryMediaPlugin {
   stopSyncService(): Promise<{ ok: boolean }>;
   /** Keeps the service alive between queues so background sync can resume. */
   setBackgroundSync(options: { enabled: boolean }): Promise<{ ok: boolean }>;
+  storageUsage(): Promise<{ total: number; dirs: Record<string, number> }>;
+  clearAppCache(): Promise<{ freed: number }>;
   checkBatteryOptimization(): Promise<{ ignoring: boolean }>;
   requestBatteryOptimizationExemption(): Promise<{ ignoring: boolean; requested?: boolean }>;
   addListener(
@@ -154,6 +156,38 @@ export async function setBackgroundSync(enabled: boolean): Promise<void> {
   try {
     await LocalGalleryMedia.setBackgroundSync({ enabled });
   } catch { /* noop */ }
+}
+
+// ------- Storage ---------------------------------------------------------------
+export interface StorageReport {
+  total: number;
+  dirs: Record<string, number>;
+}
+
+/**
+ * What the app is actually using on disk, per directory.
+ *
+ * Android's "app data" figure includes the WebView's own profile and its blob
+ * spill area, neither of which this code writes directly — so without a
+ * breakdown, a number like 8 GB is unattributable.
+ */
+export async function storageUsage(): Promise<StorageReport | null> {
+  if (!isNative()) return null;
+  try {
+    return await LocalGalleryMedia.storageUsage();
+  } catch {
+    return null;
+  }
+}
+
+/** Clears the caches only. The app's own database is never touched here. */
+export async function clearAppCache(): Promise<number> {
+  if (!isNative()) return 0;
+  try {
+    return (await LocalGalleryMedia.clearAppCache()).freed ?? 0;
+  } catch {
+    return 0;
+  }
 }
 
 // ------- Battery optimization -------------------------------------------------

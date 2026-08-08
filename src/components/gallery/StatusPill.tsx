@@ -22,6 +22,9 @@ interface Stats {
   reclaimableIds: string[];
 }
 
+/** Must stay at or below the native side's own per-request ceiling. */
+const DELETE_BATCH = 400;
+
 const fmt = (bytes: number) => {
   if (bytes <= 0) return "0";
   const gb = bytes / 1073741824;
@@ -95,10 +98,24 @@ export function StatusPill() {
     if (!stats?.reclaimableIds.length) return;
     setBusy(true);
     try {
+      // One batch per press. The whole list travels to the system in a single
+      // Binder transaction, and five thousand at once overflowed it — the
+      // request threw, the error was swallowed, and the button looked dead.
+      const batch = stats.reclaimableIds.slice(0, DELETE_BATCH);
+      const rest = stats.reclaimableIds.length - batch.length;
       // The OS owns the confirmation on Android 11+, so record the intent and
       // let the focus-return reconcile decide what actually went.
-      await markPendingDeletes(stats.reclaimableIds);
-      await deleteGalleryItems(stats.reclaimableIds);
+      await markPendingDeletes(batch);
+      const asked = await deleteGalleryItems(batch);
+      if (asked <= 0) {
+        toast.error("تعذّر بدء الحذف");
+      } else {
+        toast.info(
+          rest > 0
+            ? `أكّد حذف ${batch.length} عنصراً — ثم اضغط ثانية للباقي (${rest})`
+            : `أكّد حذف ${batch.length} عنصراً من نافذة النظام`,
+        );
+      }
     } catch {
       toast.error("تعذّر الحذف");
     } finally {
