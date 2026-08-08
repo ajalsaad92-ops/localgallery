@@ -47,6 +47,7 @@ export async function getSavedSession(): Promise<string | null> {
 export async function clearAccount() {
   await photoDb.kv.delete(KEY_SESSION);
   cached = null;
+  entityCache = null;
 }
 
 // --- client -----------------------------------------------------------------
@@ -238,6 +239,7 @@ export async function getSavedTarget(): Promise<MtTarget | null> {
 }
 
 export async function saveTarget(t: MtTarget | null) {
+  entityCache = null;
   if (!t) await photoDb.kv.delete(KEY_TARGET);
   else await photoDb.kv.put({ key: KEY_TARGET, value: JSON.stringify(t) });
 }
@@ -270,9 +272,28 @@ export async function listTargets(): Promise<MtTarget[]> {
   return out;
 }
 
+/**
+ * Last resolved channel, kept because every upload needs it.
+ *
+ * With a hundred files in flight this was a hundred resolve calls per pass —
+ * a good way to earn a FLOOD_WAIT before a single byte is sent. The entity
+ * carries an account-scoped access hash, so it stays valid across reconnects;
+ * only a different account or channel invalidates it.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let entityCache: { id: string; entity: any } | null = null;
+
 /** Resolve a stored target id back into a usable entity (cache-aware). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function resolveEntity(client: any, target: MtTarget): Promise<any> {
+  if (entityCache && entityCache.id === target.id) return entityCache.entity;
+  const entity = await resolveEntityUncached(client, target);
+  entityCache = { id: target.id, entity };
+  return entity;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function resolveEntityUncached(client: any, target: MtTarget): Promise<any> {
   try {
     if (target.username) return await client.getEntity(target.username);
     return await client.getEntity(BigInt(target.id));
